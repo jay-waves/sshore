@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func requestOperations(ops []operation) error {
@@ -57,8 +58,6 @@ func requestOperations(ops []operation) error {
 
 func attachmentApprovalCommand(p *attachment, m message) error {
 	switch m.Type {
-	case "approval_ready":
-		p.approvals.enable()
 	case "approval_handoff", "approval_rejected":
 		p.approvals.reply(m)
 	default:
@@ -67,16 +66,14 @@ func attachmentApprovalCommand(p *attachment, m message) error {
 	return nil
 }
 
-func (s *tmuxTask) requestApproval(c net.Conn, m message) error {
+func (s *shellTask) requestApproval(c net.Conn, m message) error {
 	if err := checkPeerVersion(m.SoftwareVersion, "requesting helper"); err != nil {
 		return err
 	}
 	if err := validateOperations(m.Operations); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	p := s.runtime.Active()
-	s.mu.Unlock()
+	p := s.frontend(s.session.Snapshot().Active)
 	if p == nil {
 		return fmt.Errorf("no attached client")
 	}
@@ -84,17 +81,19 @@ func (s *tmuxTask) requestApproval(c net.Conn, m message) error {
 		if !validRequestID(id) {
 			return fmt.Errorf("invalid approval handoff")
 		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.runtime.Active() != p || s.runtime.Exited() || s.runtime.Stopping() {
-			return fmt.Errorf("source attachment changed")
-		}
 		for i := range m.Operations {
 			m.Operations[i].LocalHint = ""
 			m.Operations[i].LF = false
 		}
-		s.resourceApproval = resourceApproval{id: id, operations: m.Operations}
-		return nil
+		return s.session.Inspect(func(state tmux.Snapshot) error {
+			if state.Active != p.Attachment || state.Stopping {
+				return fmt.Errorf("source attachment changed")
+			}
+			s.mu.Lock()
+			s.resourceApproval = resourceApproval{id: id, operations: m.Operations}
+			s.mu.Unlock()
+			return nil
+		})
 	})
 }
 

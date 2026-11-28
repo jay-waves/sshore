@@ -99,11 +99,11 @@ type reviewedTask struct {
 
 func (s *daemonTasks) reviewedTasksLocked() []reviewedTask {
 	var rows []reviewedTask
-	for id, task := range s.liveLocked() {
+	for id, task := range s.entries {
 		info := daemonTaskInfo{ID: id, Name: task.taskName()}
 		switch task := task.(type) {
-		case *tmuxTask:
-			info.Kind = terminalTaskKind(task.runtime.Process().ProgramLine != "")
+		case *shellTask:
+			info.Kind = terminalTaskKind(task.session.Snapshot().Process.ProgramLine != "")
 		case *daemonResourceTask:
 			info.Kind = task.record.Kind
 		}

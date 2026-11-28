@@ -1,13 +1,12 @@
 package tmux
 
 import (
-	"crypto/subtle"
 	"errors"
-	"fmt"
+
 	"time"
 )
 
-func (t *Task[A, T]) pinStateLocked() (bool, time.Time) {
+func (t *Session) pinStateLocked() (bool, time.Time) {
 	if t.pinUntil == nil {
 		return false, time.Time{}
 	}
@@ -15,13 +14,12 @@ func (t *Task[A, T]) pinStateLocked() (bool, time.Time) {
 }
 
 // RequestDetach pins the active session before asking its frontend to detach.
-func (t *Task[A, T]) RequestDetach(ttl time.Duration) (A, time.Time, error) {
+func (t *Session) RequestDetach(ttl time.Duration) (*Attachment, time.Time, error) {
 	t.guard.Lock()
-	var empty A
 	active := t.active
-	if active == empty {
+	if active == nil {
 		t.guard.Unlock()
-		return empty, time.Time{}, errors.New("shell has no active attachment")
+		return nil, time.Time{}, errors.New("shell has no active attachment")
 	}
 	err := t.pinLocked(ttl)
 	_, until := t.pinStateLocked()
@@ -32,11 +30,11 @@ func (t *Task[A, T]) RequestDetach(ttl time.Duration) (A, time.Time, error) {
 	return active, until, err
 }
 
-func (t *Task[A, T]) pinLocked(ttl time.Duration) error {
+func (t *Session) pinLocked(ttl time.Duration) error {
 	if ttl < 0 {
 		return errors.New("invalid pin duration")
 	}
-	if t.Exited() || t.Stopping() || !t.Started() {
+	if t.exited() || t.stoppingLocked() || !t.startedLocked() {
 		return errors.New("shell is ending or has not started")
 	}
 	var deadline time.Time
@@ -55,13 +53,12 @@ func (t *Task[A, T]) pinLocked(ttl time.Duration) error {
 
 // unretained reports when the owner has gone and no pin keeps the task alive.
 // An active attachment can finish even if its last pin has expired.
-func (t *Task[A, T]) unretained(now time.Time) bool {
+func (t *Session) unretained(now time.Time) bool {
 	if parent := t.node.Parent(); parent != nil && parent.Ended() {
 		t.scopeLost = true
 	}
-	var empty A
 	if t.pinUntil != nil {
-		if t.pinUntil.IsZero() || now.Before(*t.pinUntil) || t.scopeLost && t.active != empty {
+		if t.pinUntil.IsZero() || now.Before(*t.pinUntil) || t.scopeLost && t.active != nil {
 			return false
 		}
 		t.pinUntil = nil
@@ -70,8 +67,8 @@ func (t *Task[A, T]) unretained(now time.Time) bool {
 	return t.scopeLost
 }
 
-func (t *Task[A, T]) reapUnretainedLocked() {
-	if t.Exited() || t.Stopping() || !t.unretained(time.Now()) {
+func (t *Session) reapUnretainedLocked() {
+	if t.exited() || t.stoppingLocked() || !t.unretained(time.Now()) {
 		return
 	}
 	t.stopReason = "shell lifetime ended"
@@ -82,69 +79,50 @@ func (t *Task[A, T]) reapUnretainedLocked() {
 	}()
 }
 
-func (t *Task[A, T]) watchParent(parent *treeNode[T]) {
+func (t *Session) watchParent(parent *treeNode) {
 	go func() {
 		select {
 		case <-parent.done:
 			live, stopping := t.endScope(parent)
 			if live && t.events.ParentEnded != nil {
-				t.events.ParentEnded(parent.Value, stopping)
+				t.events.ParentEnded(parent.id, stopping)
 			}
 		case <-t.done:
 		}
 	}()
 }
 
-// ClaimOwner binds the root's starting connection to this session. SSH has
-// already authenticated the connection and validated the parent and token.
-func (t *Task[A, T]) ClaimOwner(parent, token string) bool {
+// ClaimOwner binds an authenticated owner's lifetime to this session. The
+// caller validates the owner and signals OwnerEnded when its lease ends.
+func (t *Session) ClaimOwner() bool {
 	t.guard.Lock()
-	if t.ownerClaimed || t.node.Parent() != nil || t.Exited() || t.Stopping() ||
-		parent != "" && t.Started() {
+	if t.ownerClaimed || t.node.Parent() != nil || t.exited() || t.stoppingLocked() {
 		t.guard.Unlock()
 		return false
 	}
 	t.ownerClaimed = true
-	t.remoteOwner, t.remoteOwnerToken = parent, token
 	t.guard.Unlock()
 	t.changed()
 	return true
 }
 
-func (t *Task[A, T]) HasRemoteOwner(token string) bool {
-	t.guard.Lock()
-	defer t.guard.Unlock()
-	return t.remoteOwner != "" && t.checkOwnerLocked(token) == nil
-}
-
-func (t *Task[A, T]) checkOwnerLocked(token string) error {
-	if subtle.ConstantTimeCompare([]byte(token), []byte(t.remoteOwnerToken)) == 1 {
-		return nil
-	}
-	if parent := t.remoteOwner; parent != "" {
-		return fmt.Errorf("enter shell %s from its parent %s", t.node.Label, parent[:min(6, len(parent))])
-	}
-	return errors.New("parent shell route ended")
-}
-
 // OwnerEnded revokes the route and applies the session's retention policy.
-func (t *Task[A, T]) OwnerEnded() (live, stopping bool) { return t.endScope(nil) }
+func (t *Session) OwnerEnded() (live, stopping bool) { return t.endScope(nil) }
 
-func (t *Task[A, T]) endScope(parent *treeNode[T]) (live, stopping bool) {
+func (t *Session) endScope(parent *treeNode) (live, stopping bool) {
 	t.guard.Lock()
 	if t.node.Parent() != parent {
 		t.guard.Unlock()
 		return false, false
 	}
-	live = !t.Exited() && !t.Stopping()
+	live = !t.exited() && !t.stoppingLocked()
 	if parent != nil {
 		t.manager.forest.setParent(t.node, nil)
-	} else {
-		t.remoteOwner, t.remoteOwnerToken = "", ""
+
 	}
 	t.scopeLost = true
 	t.reapUnretainedLocked()
-	stopping = t.Stopping()
+	stopping = t.stoppingLocked()
 	t.guard.Unlock()
 	t.changed()
 	return live, stopping

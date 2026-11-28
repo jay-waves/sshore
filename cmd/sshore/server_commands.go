@@ -106,8 +106,8 @@ func (e deploymentEndpoint) openService(ctx context.Context, client *sshio.Clien
 	track := func(size int64, source io.Reader, send func(io.Reader) error) error {
 		label := "Deploy server " + version + " to " + e.Host
 		run := func(count *atomic.Int64) error { return send(files.CountReads(source, count)) }
-		if relay, ok := diagnostic.(*shellDiagnostics); ok {
-			return relay.trackProgress(label, size, run)
+		if _, ok := diagnostic.(*shellDiagnostics); ok {
+			return termui.RunProgress(os.Stderr, label, size, run)
 		}
 		return termui.RunProgress(diagnostic, label, size, run)
 	}

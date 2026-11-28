@@ -13,6 +13,8 @@ install -o sshore-fixture -g sshore-fixture -m 600 "$fixture/identity.pub" /home
     printf '[127.0.0.1]:2222 '
     cat "$fixture/host.pub"
 } > "$fixture/known_hosts"
+# The disposable SSH account can also initiate an independent login.
+install -o sshore-fixture -g sshore-fixture -m 600 "$fixture/identity" /home/sshore-fixture/nested-key
 # Docker mounts the private cgroup subtree read-only. Change the mount flags
 # in this namespace without mounting the cgroup filesystem again.
 cg=/sys/fs/cgroup

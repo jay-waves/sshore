@@ -20,6 +20,9 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 		State: taskDetached, PID: 42, Attachment: newTaskUID(),
 	}
 	activity := &daemonActivity{tasks: tasks, root: root, instance: newTaskUID()}
+	if err := activity.startInventory(); err != nil {
+		t.Fatal(err)
+	}
 	if err := historyTransaction(root, true, func(tx *bolt.Tx) error { return observeParticipation(tx, row) }); err != nil {
 		t.Fatal(err)
 	}
@@ -40,10 +43,6 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		offline, err := loadInventory(root, newTaskUID())
-		if err != nil || len(offline.Shells) != 1 {
-			t.Fatalf("stale live view was not discarded: %+v, %v", offline, err)
-		}
 		if len(snapshot.Shells) != 2 || snapshot.Shells[0].State != taskStarting {
 			t.Fatalf("busy shell missing or mislabeled: %+v", snapshot.Shells)
 		}
@@ -52,6 +51,14 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("inventory blocked on a task")
+	}
+	restarted := &daemonActivity{root: root, instance: newTaskUID()}
+	if err := restarted.startInventory(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := loadInventory(root, restarted.instance)
+	if err != nil || len(snapshot.Shells) != 1 || !snapshot.Shells[0].Observed || snapshot.Shells[0].Instance != row.Instance {
+		t.Fatalf("expected only the saved remote observation after restart: %+v, %v", snapshot.Shells, err)
 	}
 }
 

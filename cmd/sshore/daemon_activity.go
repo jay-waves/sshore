@@ -26,16 +26,17 @@ type activityLease struct {
 // All live advertisements and leases belong to the account daemon. No state
 // file or PID scan can recreate a lease after its connection has gone away.
 type daemonActivity struct {
-	root           string
-	instance       string
-	inventoryMu    sync.Mutex
-	inventoryRetry *time.Timer
-	inventoryHost  hostInfo
-	pendingRows    map[string]struct{}
-	tasks          *daemonTasks
-	mu             sync.Mutex
-	leases         map[*activityLease]struct{}
-	nextPeerOrder  uint64
+	root            string
+	instance        string
+	inventoryMu     sync.Mutex
+	inventoryClosed bool
+	inventoryRetry  *time.Timer
+	inventoryHost   hostInfo
+	pendingRows     map[string]struct{}
+	tasks           *daemonTasks
+	mu              sync.Mutex
+	leases          map[*activityLease]struct{}
+	nextPeerOrder   uint64
 }
 
 var accountActivity atomic.Pointer[daemonActivity]
@@ -257,15 +258,3 @@ func acceptActivityLease(ctx context.Context, c net.Conn, heartbeat bool) (func(
 }
 
 func (s *daemonActivity) busy() bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.leases) != 0 }
-
-func beginCommandActivity() (func(), error) {
-	return leaseActivity(leaseRequest{Kind: "heartbeat"})
-}
-func withDaemonActivity(execute func() (int, error)) (int, error) {
-	stop, err := beginCommandActivity()
-	if err != nil {
-		return 1, err
-	}
-	defer stop()
-	return execute()
-}

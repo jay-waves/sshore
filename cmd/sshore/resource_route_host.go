@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 type resourceApproval struct {
@@ -14,7 +15,7 @@ type resourceApproval struct {
 	operations []operation
 }
 
-func (s *tmuxTask) serveRoutedResource(c net.Conn, request message, relay func(net.Conn, message) error) {
+func (s *shellTask) serveRoutedResource(c net.Conn, request message, relay func(net.Conn, message) error) {
 	fail := func(err error) {
 		_ = writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
 	}
@@ -71,27 +72,30 @@ func (s *tmuxTask) serveRoutedResource(c net.Conn, request message, relay func(n
 	}
 }
 
-func (s *tmuxTask) consumeResourceApproval(request message, op operation) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.runtime.Exited() || s.runtime.Stopping() || s.runtime.Active() != nil || s.record.UID != request.Instance || s.record.Name != request.Name || !s.runtime.Started() || s.runtime.PID() != request.PID {
-		return fmt.Errorf("approved shell changed or remains attached; request the operation again")
-	}
-	grant := &s.resourceApproval
-	if grant.id == "" || grant.id != request.ApprovalID {
-		return fmt.Errorf("resource approval changed or was already used; request the operation again")
-	}
-	expected := grant.operations[0]
-	// Only the origin port may differ from the proposal.
-	if expected.Kind == "forward" {
-		expected.Forward.LocalPort = op.Forward.LocalPort
-	}
-	if expected != op {
-		return fmt.Errorf("operation does not match the resource approval")
-	}
-	grant.operations = grant.operations[1:]
-	if len(grant.operations) == 0 {
-		*grant = resourceApproval{}
-	}
-	return nil
+func (s *shellTask) consumeResourceApproval(request message, op operation) error {
+	return s.session.Inspect(func(state tmux.Snapshot) error {
+		if state.State == tmux.StateExited || state.Stopping || state.Attaching || state.Active != nil ||
+			state.PID <= 0 || state.PID != request.PID || state.ID != request.Instance || state.Name != request.Name {
+			return fmt.Errorf("approved shell changed or remains attached; request the operation again")
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		grant := &s.resourceApproval
+		if grant.id == "" || grant.id != request.ApprovalID {
+			return fmt.Errorf("resource approval changed or was already used; request the operation again")
+		}
+		expected := grant.operations[0]
+		// Only the origin port may differ from the proposal.
+		if expected.Kind == "forward" {
+			expected.Forward.LocalPort = op.Forward.LocalPort
+		}
+		if expected != op {
+			return fmt.Errorf("operation does not match the resource approval")
+		}
+		grant.operations = grant.operations[1:]
+		if len(grant.operations) == 0 {
+			*grant = resourceApproval{}
+		}
+		return nil
+	})
 }

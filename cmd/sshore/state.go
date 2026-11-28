@@ -74,11 +74,14 @@ func statePath(name string) (string, error) {
 
 // Resolve the directory and the live bucket generation from one ownership probe.
 func accountDatabaseLocation(wait time.Duration) (root, instance string, err error) {
+	if daemon := accountActivity.Load(); daemon != nil {
+		return daemon.root, daemon.instance, nil
+	}
 	record, err := daemonRecordWithin(wait)
 	if err != nil && !os.IsNotExist(err) {
 		return "", "", err
 	}
-	if root := fixedStateRoot(); root != "" {
+	if root := deployedStateRoot(); root != "" {
 		return root, record.UID, nil
 	}
 	root, err = configuredStateRoot(record)

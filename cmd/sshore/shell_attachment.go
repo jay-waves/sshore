@@ -34,10 +34,13 @@ func (a *attachment) childResult(err error) {
 }
 
 func (a *attachment) finishExit(exit message) {
-	a.FinishOutput(func(offset uint64, incomplete bool) {
-		exit.TerminalOffset, exit.OutputIncomplete = offset, incomplete
-		_ = a.controlMessage(exit)
-	})
+	exit.TerminalOffset, exit.OutputIncomplete = a.OutputStatus()
+	_ = a.controlMessage(exit)
+	select {
+	case <-a.Done():
+	case <-time.After(2 * time.Second):
+		a.Close()
+	}
 }
 
 func expectDetachMessage(r io.Reader, expected string) (message, error) {
@@ -62,23 +65,72 @@ func (a *attachment) finishDetach(reply message) error {
 	return err
 }
 
-func (s *tmuxTask) attach(c net.Conn, m message, extra func(*attachment, message) error) error {
+func (s *shellTask) attach(c net.Conn, m message, extra func(*attachment, message) error) (result error) {
 	// The initial request deadline must not expire an attached shell.
 	_ = c.SetReadDeadline(time.Time{})
-	p := &attachment{Attachment: tmux.NewAttachment(c), control: c}
-	return s.runtime.ServeAttachment(p, s.attachmentRequest(p, m), func(key string, state tmux.Snapshot[*attachment]) error {
-		return s.attachmentReady(p, m, key, state)
-	}, func(err error) error {
-		if err != nil {
-			return s.attachRejected(p, err)
+	p := &attachment{control: c}
+	terminal := s.takeTerminal(m.Token)
+	if terminal == nil {
+		return s.attachRejected(p, errTerminalEndpoint)
+	}
+	defer terminal.Close()
+	if err := validateAttach(m); err != nil {
+		return s.attachRejected(p, err)
+	}
+	if s.hosted && m.Instance != "" && m.Instance != s.record.UID {
+		return s.attachRejected(p, tmux.ErrUnavailable)
+	}
+	p.Attachment = tmux.NewAttachment(terminal)
+	p.approvals.ready = s.hosted && m.CanApprove
+	s.mu.Lock()
+	if s.frontends == nil {
+		s.frontends = make(map[*tmux.Attachment]*attachment)
+	}
+	s.frontends[p.Attachment] = p
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.frontends, p.Attachment)
+		s.mu.Unlock()
+	}()
+	controlClosed := make(chan struct{})
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		defer close(controlClosed)
+		select {
+		case <-p.Done():
+			_ = c.Close()
+		case <-finished:
 		}
-		return s.serveAttachment(p, extra)
-	})
+	}()
+	if err := s.session.Attach(p.Attachment, s.attachmentOptions(m), func(key string, state tmux.Snapshot) error {
+		return s.attachmentReady(p, m, key, state)
+	}); err != nil {
+		return s.attachRejected(p, err)
+	}
+	defer func() {
+		detached, err := p.Disconnect()
+		<-controlClosed
+		if err != nil || result != nil && detached.Released {
+			s.reportAttachmentLoss(result, err)
+		}
+	}()
+	return s.serveAttachment(p, extra)
 }
 
-func (s *tmuxTask) attachRejected(p *attachment, err error) error {
-	if errors.Is(err, tmux.ErrTerminalEndpoint) {
+func (s *shellTask) frontend(active *tmux.Attachment) *attachment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.frontends[active]
+}
+
+func (s *shellTask) attachRejected(p *attachment, err error) error {
+	if errors.Is(err, errTerminalEndpoint) {
 		return p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
+	}
+	if errors.Is(err, tmux.ErrUnavailable) {
+		err = fmt.Errorf("shell changed or is unavailable; refresh with sshore list")
 	}
 	fatal := message{Type: "fatal"}
 	if s.hosted {
@@ -101,28 +153,15 @@ func (s *tmuxTask) attachRejected(p *attachment, err error) error {
 	return err
 }
 
-func (s *tmuxTask) attachmentRequest(p *attachment, m message) tmux.AttachRequest {
-	req := tmux.AttachRequest{TerminalToken: m.Token, ValidationError: validateAttach(m)}
-	if req.ValidationError != nil {
-		return req
+func (s *shellTask) attachmentOptions(m message) tmux.AttachOptions {
+	return tmux.AttachOptions{
+		TreeKey: m.TreeKey, Size: shellSize(m), Term: m.Term, Pin: m.Pinned,
+		Existing: s.hosted && m.Action == "existing",
+		Startup:  tmux.Startup{Argv: m.Argv, NoLogin: m.NoLogin, NoProfile: m.NoProfile},
 	}
-	if s.hosted && m.Instance != "" && m.Instance != s.record.UID {
-		req.ValidationError = fmt.Errorf("shell changed or is unavailable; refresh with sshore list")
-		return req
-	}
-	req.TreeKey, req.Size, req.Pin = m.TreeKey, shellSize(m), m.Pinned
-	req.Existing, req.RetryUnstarted = s.hosted && m.Action == "existing", s.hosted
-	req.StartupOptions = m.NoLogin || m.NoProfile || len(m.Argv) != 0
-	if owned, ok := p.control.(*ownedShellConnection); ok {
-		req.OwnerToken = owned.token
-	}
-	if !req.Existing {
-		req.Launch, req.LaunchError = s.shellLaunch(m)
-	}
-	return req
 }
 
-func (s *tmuxTask) attachmentReady(p *attachment, m message, key string, state tmux.Snapshot[*attachment]) error {
+func (s *shellTask) attachmentReady(p *attachment, m message, key string, state tmux.Snapshot) error {
 	instance := state.ID
 	if !s.hosted {
 		instance = ""
@@ -136,7 +175,7 @@ func (s *tmuxTask) attachmentReady(p *attachment, m message, key string, state t
 		PID: state.PID, Name: state.Name, Shell: state.Process.Shell, Program: state.Process.ProgramLine != ""})
 }
 
-func (s *tmuxTask) reportAttachmentLoss(cause, err error) {
+func (s *shellTask) reportAttachmentLoss(cause, err error) {
 	if cause != nil {
 		termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Shell attachment disconnected: %s", cleanText(cause.Error()))
 	}
@@ -145,13 +184,13 @@ func (s *tmuxTask) reportAttachmentLoss(cause, err error) {
 	}
 }
 
-func (s *tmuxTask) detachAttachment(p *attachment, request message) (bool, error) {
+func (s *shellTask) detachAttachment(p *attachment, request message) (bool, error) {
 	var retention *time.Duration
 	if request.Action != "switch" {
 		duration := time.Duration(request.TTLNanos)
 		retention = &duration
 	}
-	detached, err := s.runtime.Detach(p, retention)
+	detached, err := s.session.Detach(p.Attachment, retention)
 	if _, failed := errors.AsType[tmux.PinFailure](err); failed {
 		return false, p.controlMessage(message{Type: "pin_failed", Error: err.Error()})
 	}
@@ -165,7 +204,7 @@ func (s *tmuxTask) detachAttachment(p *attachment, request message) (bool, error
 }
 
 // The control loop translates messages while tmux runs the terminal byte stream.
-func (s *tmuxTask) serveAttachment(p *attachment, extra func(*attachment, message) error) error {
+func (s *shellTask) serveAttachment(p *attachment, extra func(*attachment, message) error) error {
 	for {
 		request, err := readMessage(p.control)
 		if err != nil {
@@ -184,7 +223,7 @@ func (s *tmuxTask) serveAttachment(p *attachment, extra func(*attachment, messag
 	}
 }
 
-func (s *tmuxTask) attachmentControl(p *attachment, request message, extra func(*attachment, message) error) error {
+func (s *shellTask) attachmentControl(p *attachment, request message, extra func(*attachment, message) error) error {
 	switch request.Type {
 	case "input_barrier":
 		ready, err := p.DrainInput(request.TerminalOffset)
@@ -193,7 +232,7 @@ func (s *tmuxTask) attachmentControl(p *attachment, request message, extra func(
 		}
 		return p.controlMessage(message{Type: "input_drained"})
 	case "resize":
-		if err := s.runtime.ResizeAttached(p, shellSize(request)); err != nil {
+		if err := s.session.ResizeAttached(p.Attachment, shellSize(request)); err != nil {
 			return fmt.Errorf("resize terminal: %w", err)
 		}
 		if s.hosted {
@@ -201,7 +240,7 @@ func (s *tmuxTask) attachmentControl(p *attachment, request message, extra func(
 		}
 		return nil
 	case "redraw":
-		s.runtime.Redraw(p)
+		s.session.Redraw(p.Attachment)
 		return p.controlMessage(message{Type: "redrawn"})
 	case "session_targets":
 		return p.controlMessage(s.sessionTargets(request))
@@ -214,11 +253,11 @@ func (s *tmuxTask) attachmentControl(p *attachment, request message, extra func(
 	}
 }
 
-func (s *tmuxTask) holdTree(conn net.Conn, m message) error {
+func (s *shellTask) holdTree(conn net.Conn, m message) error {
 	if checkPeerVersion(m.SoftwareVersion, "client") != nil {
 		return writeMessage(conn, message{Type: "error", Error: "current shell attachment changed"})
 	}
-	release, ok := s.runtime.Hold(m.TreeKey)
+	release, ok := s.session.Hold(m.TreeKey)
 	if !ok {
 		return writeMessage(conn, message{Type: "error", Error: "current shell attachment changed"})
 	}

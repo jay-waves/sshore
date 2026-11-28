@@ -1,19 +1,27 @@
 package tmux
 
 import (
-	"sync"
 	"testing"
 	"time"
 )
 
 func TestExpiredPinKeepsActiveShellUntilDetach(t *testing.T) {
-	var manager Manager[*Attachment, string]
-	parent := manager.NewSession("parent", "parent", "parent", nil, new(sync.Mutex), Events[*Attachment, string]{})
-	child := manager.NewSession("child", "child", "child", parent, new(sync.Mutex), Events[*Attachment, string]{})
+	var manager Manager
+	parent, err := manager.Create(SessionConfig{ID: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := manager.Create(SessionConfig{ID: "child", Parent: parent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise retention with the parent marked as ended, independently of its watcher.
+	parent.node.ended.Store(true)
+	defer parent.Close()
+	defer child.Close()
 	deadline := time.Now()
 	child.pinUntil = &deadline
 	child.active = new(Attachment)
-	parent.Close()
 
 	if child.unretained(deadline) {
 		t.Fatal("parent exit and pin expiry stopped an active shell")

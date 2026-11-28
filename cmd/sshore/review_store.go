@@ -93,12 +93,6 @@ type approvalExchanges struct {
 	ready    bool
 }
 
-func (a *approvalExchanges) enable() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.ready = true
-}
-
 func (a *approvalExchanges) disable() {
 	a.mu.Lock()
 	defer a.mu.Unlock()

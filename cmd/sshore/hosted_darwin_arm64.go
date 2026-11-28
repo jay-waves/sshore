@@ -33,6 +33,6 @@ func runHostedCommand(options) (int, error) {
 
 type hostedState struct{}
 
-func (s *tmuxTask) serveHostedIngress(c net.Conn, m message) error {
+func (s *shellTask) serveHostedIngress(c net.Conn, m message) error {
 	return errDarwinHostedShell
 }

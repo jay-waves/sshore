@@ -4,7 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"io"
-	"maps"
+
 	"net"
 	"slices"
 	"time"
@@ -29,10 +29,10 @@ func requestShellRetention(c io.ReadWriter, request message) error {
 
 // A root lease belongs to the frontend. A child on another daemon gets its
 // parent identity and private entry token from this lease.
-func (s *tmuxTask) serveOwner(c net.Conn, m message) (result error) {
+func (s *shellTask) serveOwner(c net.Conn, m message) (result error) {
 	if m.Instance != s.record.UID || m.SoftwareVersion != version ||
-		m.Owner == "" && m.Token != "" || m.Owner != "" && (!s.hosted || !validTaskUID(m.Owner) || len(m.Token) != 64) ||
-		!s.runtime.ClaimOwner(m.Owner, m.Token) {
+		m.Owner != "" || m.Token != "" ||
+		!s.session.ClaimOwner() {
 		return writeMessage(c, message{Type: "error", Error: "shell owner unavailable"})
 	}
 	defer func() { s.ownerConnectionEnded(result) }()
@@ -40,7 +40,7 @@ func (s *tmuxTask) serveOwner(c net.Conn, m message) (result error) {
 	defer close(done)
 	go func() {
 		select {
-		case <-s.runtime.Done():
+		case <-s.session.Done():
 			c.Close()
 		case <-done:
 		}
@@ -51,13 +51,8 @@ func (s *tmuxTask) serveOwner(c net.Conn, m message) (result error) {
 	return fmt.Errorf("account daemon unavailable")
 }
 
-type ownedShellConnection struct {
-	net.Conn
-	token string
-}
-
-func (s *tmuxTask) ownerConnectionEnded(cause error) {
-	live, stopping := s.runtime.OwnerEnded()
+func (s *shellTask) ownerConnectionEnded(cause error) {
+	live, stopping := s.session.OwnerEnded()
 	if !live {
 		return
 	}
@@ -72,11 +67,11 @@ func (s *tmuxTask) ownerConnectionEnded(cause error) {
 	s.reportScopeEnd(level, reason, stopping)
 }
 
-func (s *tmuxTask) reportParentEnd(parent *tmuxTask, stopping bool) {
-	s.reportScopeEnd(termui.Info, "Parent shell "+canonicalTaskCode(parent.treeIdentity())+" ended", stopping)
+func (s *shellTask) reportParentEnd(parent string, stopping bool) {
+	s.reportScopeEnd(termui.Info, "Parent shell "+canonicalTaskCode(taskKey(parent))+" ended", stopping)
 }
 
-func (s *tmuxTask) reportScopeEnd(level termui.Color, reason string, stopping bool) {
+func (s *shellTask) reportScopeEnd(level termui.Color, reason string, stopping bool) {
 	outcome := "Keeping pinned shell."
 	if stopping {
 		outcome = "Stopping unpinned shell."
@@ -84,51 +79,21 @@ func (s *tmuxTask) reportScopeEnd(level termui.Color, reason string, stopping bo
 	termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), level, "%s. %s", reason, outcome)
 }
 
-func (s *tmuxTask) reportReapFailure(err error) {
+func (s *shellTask) reportReapFailure(err error) {
 	termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not stop unpinned shell: %s", cleanText(err.Error()))
 }
 
 // The owner lease is still live while the exit frame is being assembled.
-func (s *tmuxTask) retainedChildren() []retainedShell {
+func (s *shellTask) retainedChildren() []retainedShell {
 	var retained []retainedShell
 	now := time.Now()
-	for _, child := range s.registry.shells.Children(s.runtime) {
-		view := child.runtime.Snapshot()
+	for _, child := range s.registry.sessions.Children(s.session) {
+		view := child.Snapshot()
 		if view.ParentID == s.record.UID && view.State != taskExited && !view.Stopping && view.Pinned && (view.PinUntil.IsZero() || now.Before(view.PinUntil)) {
 			retained = append(retained, retainedShell{Instance: view.ID, Name: view.Name, PinUntil: view.PinUntil})
 		}
 	}
 
-	s.mu.Lock()
-	remote := slices.Collect(maps.Keys(s.remoteChildren))
-	s.mu.Unlock()
-	if len(remote) > 0 {
-		replies := make(chan retainedShell, len(remote))
-		for _, child := range remote {
-			go func() {
-				status, err := child.status()
-				if err != nil || status.Owner != s.treeIdentity() || status.Action != taskDetached ||
-					!status.Pinned || !status.PinUntil.IsZero() && !time.Now().Before(status.PinUntil) {
-					replies <- retainedShell{}
-					return
-				}
-				replies <- retainedShell{Host: child.host, Instance: child.uid, Name: status.Name, PinUntil: status.PinUntil}
-			}()
-		}
-		timer := time.NewTimer(time.Second)
-		defer timer.Stop()
-	collect:
-		for range remote {
-			select {
-			case child := <-replies:
-				if child.Instance != "" {
-					retained = append(retained, child)
-				}
-			case <-timer.C:
-				break collect
-			}
-		}
-	}
 	slices.SortFunc(retained, func(a, b retainedShell) int {
 		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Name, b.Name), cmp.Compare(a.Instance, b.Instance))
 	})

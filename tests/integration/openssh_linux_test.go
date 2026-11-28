@@ -892,6 +892,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			send("\r")
 			wait("Connected " + host + ":tree-copy")
 			requireFile(t, filepath.Join(dest, "file"), "payload")
+			// The resumed attachment can receive another approval as soon as it accepts input.
 			send("sshore cp -r origin:" + dest + " here:tree-target\n")
 			wait("Approve this request?", true)
 			send("y\r")
@@ -1045,7 +1046,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			}
 			wait("Connected " + endpoint)
 			send("exit\n")
-			wait("Connected here:approval-parent")
+			wait("Now in: calling terminal")
 			send("exit\n")
 			wait("No shell attached.")
 			send("exit\r")
@@ -1796,9 +1797,11 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		parent := exec.CommandContext(ctx, binary, "shell", "--name", "resume-parent", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:resume-parent")
-			// A managed shell can only hand off to its own remote children.
+			// An independent client can resume a detached remote root from here.
 			send("sshore attach " + id + "\n")
-			wait("no live child matches")
+			wait("Connected " + root)
+			send("sshore detach\n")
+			wait("Detached from " + root)
 			send("sshore attach " + missing + "\n")
 			wait("unknown shell ID")
 			// The shell would otherwise inherit the rejected command's status.
@@ -1839,7 +1842,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			wait("Now in: calling terminal")
 		})
 	})
-	scenario("remote child resumes after its parent exits", func(t *testing.T, ctx context.Context) {
+	scenario("a nested SSH client detaches and resumes an independent remote session", func(t *testing.T, ctx context.Context) {
 		child := host + ":build"
 		cleanRemote(t, child)
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
@@ -1860,25 +1863,24 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 				t.Fatalf("unexpected remote shell state: %q", line)
 			}
 			recorded = marker + state
-			send("\x02d")
-			wait("Connected here:dev")
-			out, err := runTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":")),
-				func(_ func(string), wait terminalWait) { wait("from its parent") })
-			if err == nil {
-				t.Fatalf("a separate frontend entered the child before its parent exited:\n%s", out)
+			// The calling shell keeps its foreground attachment while its client runs.
+			if tree := string(local(t, ctx, "ps")); !strings.Contains(tree, "(dev)  R") {
+				t.Fatalf("calling shell lost its terminal:\n%s", tree)
 			}
+			send("sshore detach\n")
+			wait("Detached from " + child)
 			send("sshore attach " + childID + "\n")
 			wait("Connected " + child)
 			send(report)
 			wait(recorded)
-			send("\x02d")
-			wait("Connected here:dev")
+			send("\x02\x02d")
+			wait("Detached from " + child)
 			send("sshore attach build\n")
 			wait("Connected " + child)
 			send(report)
 			wait(recorded)
-			send("\x02d")
-			wait("Connected here:dev")
+			send("sshore detach\n")
+			wait("Detached from " + child)
 			send("exit\n")
 			wait("Exited here:dev")
 			wait("No shell attached.")
@@ -1893,6 +1895,35 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			wait("Now in: calling terminal")
 		})
 	})
+	scenario("an SSH login started on a hosted shell returns to that shell", func(t *testing.T, ctx context.Context) {
+		stop := exec.CommandContext(ctx, binary, "kill", "--all")
+		stop.Stdin = strings.NewReader("yes\n")
+		if out, err := stop.CombinedOutput(); err != nil {
+			t.Fatalf("stop previous fixture daemon: %v\n%s", err, out)
+		}
+		account, err := user.Current()
+		if err != nil {
+			t.Fatal(err)
+		}
+		outer := host + ":hosted-outer"
+		inner := "127.0.0.1:hosted-inner"
+		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", "hosted-outer", "--no-profile"), func(send func(string), wait terminalWait) {
+			wait("Connected " + outer)
+			// The key path uses the initiating account’s home. The fixture SSH
+			// server acts as the destination for both independent logins.
+			send("export OUTER_MARK=original; sshore sh 127.0.0.1 --name hosted-inner --no-profile --ssh -p 2222 -i ~/nested-key -o UserKnownHostsFile=" + filepath.Join(fixture, "known_hosts") + "\n")
+			wait("Connected " + inner)
+			if _, err := os.Stat(filepath.Join(account.HomeDir, ".sshore", "daemon", "daemon.json")); !os.IsNotExist(err) {
+				t.Fatalf("outgoing SSH login started a local daemon: %v", err)
+			}
+			send("exit 7\n")
+			wait("Exited " + inner)
+			send("printf 'RETURN_%s=%s:%s\\n' shell \"$OUTER_MARK\" \"$?\"\n")
+			wait("RETURN_shell=original:7")
+			send("exit\n")
+			wait("Exited " + outer)
+		})
+	})
 	scenario("nested exit explains retained roots", func(t *testing.T, ctx context.Context) {
 		build, child := host+":nested-build", host+":saved-child"
 		cleanRemote(t, child)
@@ -1905,14 +1936,13 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			wait("Connected " + build)
 			send("sshore sh --name saved-child --no-profile --no-login\n")
 			wait("Connected " + child)
-			send("export SSHORE_PANEL_CHECK=kept\n\x02d")
+			send("export SSHORE_PANEL_CHECK=kept; sshore detach\n")
 			wait("Connected " + build)
 			send("exit\n")
 			wait("Exited " + build + " (code 0)")
-			wait("Now in: here:panel-dev")
+			wait("Now in: calling terminal")
 			wait("Pinned shells become independent roots")
 			wait("(saved-child) · pinned indefinitely")
-			wait("Connected here:panel-dev")
 			send("exit\n")
 			wait("Now in: local console")
 			wait("No shell attached.")
@@ -2175,6 +2205,55 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		if out := local(t, ctx, "kill", "--all"); !strings.Contains(string(out), "No account daemon is running.") {
 			t.Fatalf("daemon did not release its account endpoint:\n%s", out)
 		}
+	})
+	scenario("a daemon crash retires old session IDs before a name can be reused", func(t *testing.T, ctx context.Context) {
+		stop := exec.CommandContext(ctx, binary, "kill", "--all")
+		stop.Stdin = strings.NewReader("yes\n")
+		if out, err := stop.CombinedOutput(); err != nil {
+			t.Fatalf("stop previous fixture daemon: %v\n%s", err, out)
+		}
+		const name = "crash-restart"
+		detach := func() string {
+			t.Helper()
+			var id string
+			runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, binary, "sh", "--name", name, "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
+				wait("Connected here:" + name)
+				send("printf 'CRASH_%s=%s\\n' session \"$SSHORE_LOCAL_SESSION\"\r")
+				line := strings.TrimSpace(ansi.Strip(wait("CRASH_session=task:")))
+				_, id, _ = strings.Cut(line, "CRASH_session=task:")
+				send("\x02d")
+				wait("No shell attached.")
+				send("exit\r")
+			})
+			if len(id) != 32 {
+				t.Fatalf("unexpected session ID %q", id)
+			}
+			return id
+		}
+		daemon := exec.CommandContext(ctx, binary, "daemon")
+		var old string
+		_, err := runTerminal(t, ctx, daemon, func(_ func(string), wait terminalWait) {
+			wait("Daemon running.")
+			old = detach()
+			if err := daemon.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
+			t.Fatalf("fixture daemon exit: %v", err)
+		}
+		if out := local(t, ctx, "list"); strings.Contains(string(out), name) {
+			t.Fatalf("listed a session from the crashed daemon:\n%s", out)
+		}
+		replacement := detach()
+		if replacement == old {
+			t.Fatal("replacement reused the old session ID")
+		}
+		if out, err := exec.CommandContext(ctx, binary, "attach", old).CombinedOutput(); err == nil || !strings.Contains(string(out), "unknown shell ID") {
+			t.Fatalf("retired session ID was still selectable: %v\n%s", err, out)
+		}
+		local(t, ctx, "kill", replacement)
 	})
 	scenario("local reset asks before clearing state on an idle account", func(t *testing.T, ctx context.Context) {
 		root := os.Getenv("SSHORE_STATE_DIR")

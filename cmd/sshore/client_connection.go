@@ -18,6 +18,7 @@ import (
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/tmux"
 	bolt "go.etcd.io/bbolt"
 	"golang.org/x/term"
 )
@@ -210,7 +211,7 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 				}
 				o.taskIdentity, o.session = r.identity(), r.Name
 				if o.parent == "" {
-					stop, _, err := claimShellOwner(context.Background(), func() (net.Conn, error) { return open(ctx) }, r.UID, "", "", false)
+					stop, _, err := claimShellOwner(context.Background(), func() (net.Conn, error) { return open(ctx) }, r.UID, false)
 					if err != nil {
 						return nil, err
 					}
@@ -237,9 +238,8 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 }
 
 type sessionSwitch struct {
-	from       options
-	to         options
-	sameDaemon bool
+	from options
+	to   options
 }
 
 func (s *sessionSwitch) Error() string { return "switch session" }
@@ -513,7 +513,7 @@ func warnUnusedRouteForwarding(o *options) {
 
 func rememberRemoteAttachment(tx *bolt.Tx, o options, row participatingShell) error {
 	direct := directShellOptions(o)
-	if direct.local || ownedRemoteRoute(o) {
+	if direct.local {
 		return observeParticipation(tx, row)
 	}
 	record, err := connectionFromOptions(direct)
@@ -532,14 +532,6 @@ func rememberRemoteAttachment(tx *bolt.Tx, o options, row participatingShell) er
 	return observeParticipation(tx, row)
 }
 
-func ownedRemoteRoute(o options) bool {
-	for hop := &o; hop != nil; hop = hop.routeParent {
-		if hop.remoteOwned || hop.routeParent != nil && !hop.sameHostRoute {
-			return true
-		}
-	}
-	return false
-}
 func directShellOptions(o options) options {
 	// A same-host child can be reached directly even after its parent exits.
 	hop := &o
@@ -658,20 +650,19 @@ func (h *clientHandoff) options() (options, error) {
 		return options{}, fmt.Errorf("missing handoff request")
 	}
 	shell := h.Shell
+	if !shell.Local || len(shell.SSH) != 0 {
+		return options{}, fmt.Errorf("only same-host shells can switch this terminal")
+	}
 	if (shell.Command != "sh" && shell.Command != "attach") || !filepath.IsAbs(h.Directory) ||
-		shell.Instance != "" && !validTaskUID(shell.Instance) || shell.Name != "" && validSession(shell.Name) != nil ||
-		shell.Local && len(shell.SSH) != 0 || !shell.Local && (validSSHDestination(shell.Host) != nil) {
+		shell.Instance != "" && !validTaskUID(shell.Instance) || shell.Name != "" && validSession(shell.Name) != nil {
 		return options{}, fmt.Errorf("invalid shell handoff")
 	}
-	if _, _, err := parseSSHOptions(shell.SSH); err != nil {
-		return options{}, err
-	}
-	if h.Hosted && (!shell.Local || shell.Command != "attach" || !validTaskUID(shell.Instance) || h.TaskIdentity != taskKey(shell.Instance)) {
+	if h.Hosted && (shell.Command != "attach" || !validTaskUID(shell.Instance) || h.TaskIdentity != taskKey(shell.Instance)) {
 		return options{}, fmt.Errorf("invalid hosted shell handoff")
 	}
 	return options{
-		command: shell.Command, local: shell.Local, host: shell.Host, session: shell.Name,
-		ssh: shell.SSH, argv: shell.Argv, startupDirectory: shell.StartupDirectory, pin: shell.Pin, noLogin: shell.NoLogin, noProfile: shell.NoProfile, noEscape: h.NoEscape,
+		command: shell.Command, local: true, host: "local", session: shell.Name,
+		argv: shell.Argv, startupDirectory: shell.StartupDirectory, pin: shell.Pin, noLogin: shell.NoLogin, noProfile: shell.NoProfile, noEscape: h.NoEscape,
 		sshDirectory: h.Directory, environment: h.Environment, taskIdentity: h.TaskIdentity, instance: shell.Instance, hosted: h.Hosted,
 	}, nil
 }
@@ -715,20 +706,26 @@ func (h *localHandoff) deliver(errorText string) bool {
 	return true
 }
 
-func (s *tmuxTask) requestHandoff(origin *attachment, h *clientHandoff, deadline time.Time) error {
+func (s *shellTask) requestHandoff(origin *attachment, h *clientHandoff, deadline time.Time) error {
 	if _, err := h.options(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	p := s.runtime.Active()
-	if p == nil || origin != nil && p != origin || s.handoff != nil {
-		s.mu.Unlock()
-		return errors.New("local frontend unavailable or busy")
-	}
 	prepared := make(chan string, 1)
-	pending := &localHandoff{token: resourceToken(), attachment: p, reply: prepared}
-	s.handoff = pending
-	s.mu.Unlock()
+	var p *attachment
+	var pending *localHandoff
+	if err := s.session.Inspect(func(state tmux.Snapshot) error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		p = s.frontends[state.Active]
+		if p == nil || origin != nil && p != origin || s.handoff != nil {
+			return errors.New("local frontend unavailable or busy")
+		}
+		pending = &localHandoff{token: resourceToken(), attachment: p, reply: prepared}
+		s.handoff = pending
+		return nil
+	}); err != nil {
+		return err
+	}
 	defer func() {
 		s.mu.Lock()
 		if s.handoff == pending {
@@ -762,14 +759,14 @@ func (s *tmuxTask) requestHandoff(origin *attachment, h *clientHandoff, deadline
 			return errors.New(errorText)
 		}
 		return nil
-	case <-s.runtime.Done():
+	case <-s.session.Done():
 		return errors.New("parent shell exited")
 	case <-time.After(time.Until(deadline)):
 		return errors.New("attachment startup timed out")
 	}
 }
 
-func (s *tmuxTask) finishHandoff(p *attachment, m message) {
+func (s *shellTask) finishHandoff(p *attachment, m message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if h := s.handoff; h != nil && h.attachment == p && h.token == m.Token {
@@ -777,7 +774,7 @@ func (s *tmuxTask) finishHandoff(p *attachment, m message) {
 	}
 }
 
-func (s *tmuxTask) confirmHandoff(c net.Conn, m message) error {
+func (s *shellTask) confirmHandoff(c net.Conn, m message) error {
 	s.mu.Lock()
 	pending := s.handoff
 	delivered := pending != nil && pending.attachment == nil && pending.token == m.Token && pending.deliver(m.Error)

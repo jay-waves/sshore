@@ -240,7 +240,15 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	if o.command == "sh" {
 		argv = o.argv
 	}
-	if err = streamMessage(control, message{Type: "attach", SoftwareVersion: version, TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, terminalDisplay: terminalDisplay{Cols: uint16(cols), Rows: uint16(rows), Term: termName}, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh", Argv: argv}); err != nil {
+	canApprove := (!o.local || o.hosted) && termName != "dumb"
+	request := message{
+		Type: "attach", SoftwareVersion: version, TreeKey: treeKey, Token: terminalToken,
+		SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action,
+		CanApprove: canApprove, Pinned: o.command == "sh" && o.pin,
+		NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh", Argv: argv,
+		terminalDisplay: terminalDisplay{Cols: uint16(cols), Rows: uint16(rows), Term: termName},
+	}
+	if err := streamMessage(control, request); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -276,7 +284,6 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Same identity through a new entry point; if this is a clone, reset that host's sshore state.\n")
 	}
 	o.instance = m.Instance
-	o.remoteOwned = !o.local && m.Owner != ""
 	if o.reusable != nil {
 		o.reusable.session, o.reusable.instance = o.session, o.instance
 	}
@@ -444,12 +451,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		_ = control.Close()
 		<-inputDone
 	}()
-	canApprove := (!o.local || o.hosted) && xterm.IsTerminal(int(os.Stdin.Fd())) && xterm.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("TERM") != "dumb"
-	if canApprove {
-		if err := streamMessage(control, message{Type: "approval_ready"}); err != nil {
-			return 255, err
-		}
-	}
+
 	if o.handoffDone != nil {
 		if err := o.handoffDone(ctx, nil); err != nil {
 			return 1, fmt.Errorf("confirm shell handoff: %w", err)
@@ -600,7 +602,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		target.instance, target.taskIdentity = selected.Instance, "task:"+selected.Instance
 		target.hosted = o.local && selected.Hosted
 		target.argv = nil
-		return queueSwitch(&sessionSwitch{to: target, sameDaemon: true})
+		return queueSwitch(&sessionSwitch{to: target})
 	}
 	startChild := func(pin bool, directory string) error {
 		pending.action = "sh_child"
@@ -1101,7 +1103,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					if pending.timeout != nil && pending.action == "sh_child" {
 						clearTransition()
 					}
-					if o.local && !o.hosted || len(e.m.Token) != 64 || len(e.m.HandoffToken) != 64 {
+					if (e.m.Action != "local" && e.m.Action != "attach") || o.local && !o.hosted || len(e.m.Token) != 64 || len(e.m.HandoffToken) != 64 {
 						continue
 					}
 					parent := o
@@ -1116,16 +1118,14 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						continue
 					}
 					target := options{hostInfo: e.m.advertisedHost(), argv: e.m.Argv, pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, command: "sh", host: e.m.SourceHost, session: e.m.Name, instance: e.m.Instance, routeParent: &parent, routeToken: e.m.Token}
-					if e.m.Action == "attach" || e.m.Action == "remote_attach" {
+					if e.m.Action == "attach" {
 						target.command = "attach"
 					}
-					if e.m.Action == "local" || e.m.Action == "attach" {
-						target.host, target.sameHostRoute, target.hostInfo = o.host, true, o.hostInfo
-					}
+					target.host, target.sameHostRoute, target.hostInfo = o.host, true, o.hostInfo
 					target.handoffDone = func(ctx context.Context, result error) error {
 						return confirmShellRoute(ctx, parent, token, handoffToken, result)
 					}
-					if !queueSwitch(&sessionSwitch{to: target, sameDaemon: target.sameHostRoute}) {
+					if !queueSwitch(&sessionSwitch{to: target}) {
 						reject()
 					}
 				case "handoff":
@@ -1138,7 +1138,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					}
 					target, handoffErr := e.m.Handoff.options()
 					source, token := o, e.m.Token
-					if target.command == "sh" || !target.local {
+					if target.command == "sh" {
 						target.parent = canonicalTaskUID(source.taskIdentity)
 					}
 					target.handoffDone = func(_ context.Context, result error) error {
@@ -1164,7 +1164,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					} else {
 						pending = transitionRequest{
 							action: "handoff",
-							next:   &sessionSwitch{to: target, sameDaemon: target.local},
+							next:   &sessionSwitch{to: target},
 							token:  e.m.Token,
 						}
 						awaitResponse(5 * time.Second)
@@ -1251,13 +1251,10 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						dest := &pending.next.to
 						// Keep the old reservation for rollback. A cycle commits to an independent tree.
 						if o.hold != nil {
-							switch {
-							case dest.recovering:
+							if dest.recovering {
 								dest.hold = o.hold
-							case pending.next.sameDaemon:
+							} else {
 								dest.fromTree = o.hold.treeKey
-							case dest.parent != "":
-								dest.remoteParentKey = o.hold.treeKey
 							}
 						}
 						return 0, pending.next

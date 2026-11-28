@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"iter"
 	"net"
 	"net/http"
 	"strings"
@@ -29,10 +28,10 @@ type daemonTasks struct {
 	log              io.Writer
 	cgroup           string
 	cgroupErr        error
-	shells           tmux.Manager[*attachment, *tmuxTask]
+	sessions         tmux.Manager
 	draining         bool
 	mu               sync.Mutex
-	resources        map[string]*daemonResourceTask
+	entries          map[string]daemonTask
 }
 
 func (s *daemonTasks) inventoryChanged(ids ...string) {
@@ -41,7 +40,7 @@ func (s *daemonTasks) inventoryChanged(ids ...string) {
 	}
 }
 
-func (s *daemonTasks) newShell(record localShellRecord, env []string, parent *tmuxTask, hosted bool) (*tmuxTask, error) {
+func (s *daemonTasks) newShell(record localShellRecord, env []string, parent *shellTask, hosted bool) (*shellTask, error) {
 	s.mu.Lock()
 	uid := newTaskUID()
 	name, err := s.admitLocked(uid, record.Name)
@@ -50,20 +49,33 @@ func (s *daemonTasks) newShell(record localShellRecord, env []string, parent *tm
 		return nil, err
 	}
 	record.UID, record.Name = uid, name
-	var terminalParent *tmux.Task[*attachment, *tmuxTask]
+	var terminalParent *tmux.Session
 	if parent != nil {
-		terminalParent = parent.runtime
+		terminalParent = parent.session
 	}
-	task := &tmuxTask{
-		registry: s, log: s.log, cgroup: s.cgroup, cgroupErr: s.cgroupErr,
-		record: record, environment: env, hosted: hosted,
+	task := &shellTask{
+		registry: s, log: s.log, record: record, environment: env, hosted: hosted,
 	}
-	task.runtime = s.shells.NewSession(uid, name, task, terminalParent, &task.mu, tmux.Events[*attachment, *tmuxTask]{
-		Changed: s.inventoryChanged, Exit: task.reportTerminalExit,
-		ParentEnded: task.reportParentEnd, StopFailed: task.reportReapFailure,
-		AttachmentLost: task.reportAttachmentLoss,
+	startTimeout := 15 * time.Second
+	if hosted {
+		startTimeout = 30 * time.Second
+	}
+	task.session, err = s.sessions.Create(tmux.SessionConfig{
+		ID: uid, Name: name, Parent: terminalParent, Process: task.processConfig(),
+		StartTimeout: startTimeout, RetryStart: hosted,
+		Events: tmux.Events{
+			Changed: s.inventoryChanged, Exit: task.reportTerminalExit,
+			ParentEnded: task.reportParentEnd, StopFailed: task.reportReapFailure,
+			Closed: func() {
+				s.mu.Lock()
+				delete(s.entries, uid)
+				s.mu.Unlock()
+			},
+		},
 	})
-	err = s.shells.Register(task.runtime)
+	if err == nil {
+		s.insertLocked(uid, task)
+	}
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -72,9 +84,16 @@ func (s *daemonTasks) newShell(record localShellRecord, env []string, parent *tm
 	return task, nil
 }
 
-func (s *daemonTasks) shell(id string) *tmuxTask {
-	task, _ := s.shells.Lookup(id)
+func (s *daemonTasks) shell(id string) *shellTask {
+	task, _ := s.lookup(id).(*shellTask)
 	return task
+}
+
+func (s *daemonTasks) insertLocked(id string, task daemonTask) {
+	if s.entries == nil {
+		s.entries = make(map[string]daemonTask)
+	}
+	s.entries[id] = task
 }
 
 // The account keeps one namespace and one admission lock for shells and resources.
@@ -85,7 +104,7 @@ func (s *daemonTasks) admitLocked(id, name string) (string, error) {
 	if !validTaskUID(id) {
 		return "", fmt.Errorf("invalid task ID")
 	}
-	if s.lookupLocked(id) != nil {
+	if s.entries[id] != nil {
 		return "", fmt.Errorf("task already exists")
 	}
 	if name == "" {
@@ -97,7 +116,7 @@ func (s *daemonTasks) admitLocked(id, name string) (string, error) {
 		if err := validSession(name); err != nil {
 			return "", err
 		}
-		for _, existing := range s.liveLocked() {
+		for _, existing := range s.entries {
 			if existing.taskName() == name {
 				return "", fmt.Errorf("%s: %w", name, errObjectNameInUse)
 			}
@@ -106,44 +125,20 @@ func (s *daemonTasks) admitLocked(id, name string) (string, error) {
 	return name, nil
 }
 
-// The caller holds the account admission lock.
-func (s *daemonTasks) liveLocked() iter.Seq2[string, daemonTask] {
-	return func(yield func(string, daemonTask) bool) {
-		for _, task := range s.shells.Sessions() {
-			if !yield(task.record.UID, task) {
-				return
-			}
-		}
-		for id, task := range s.resources {
-			if !yield(id, task) {
-				return
-			}
-		}
-	}
-}
-
-func (s *daemonTasks) lookupLocked(id string) daemonTask {
-	if task := s.shell(id); task != nil {
-		return task
-	}
-	if task := s.resources[id]; task != nil {
-		return task
-	}
-	return nil
-}
-
 func (s *daemonTasks) lookup(id string) daemonTask {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.lookupLocked(id)
+	return s.entries[id]
 }
 
 func (s *daemonTasks) resourceTasks() []*daemonResourceTask {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result := make([]*daemonResourceTask, 0, len(s.resources))
-	for _, task := range s.resources {
-		result = append(result, task)
+	var result []*daemonResourceTask
+	for _, task := range s.entries {
+		if resource, ok := task.(*daemonResourceTask); ok {
+			result = append(result, resource)
+		}
 	}
 	return result
 }
@@ -151,16 +146,13 @@ func (s *daemonTasks) resourceTasks() []*daemonResourceTask {
 func (s *daemonTasks) Busy() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for range s.liveLocked() {
-		return true
-	}
-	return false
+	return len(s.entries) != 0
 }
 
 func (s *daemonTasks) automaticNameLocked(uid string) string {
 	// An automatic name can only collide with prefixes of this UID.
 	var taken [33]bool
-	for _, task := range s.liveLocked() {
+	for _, task := range s.entries {
 		name := task.taskName()
 		if len(name) >= 6 && strings.HasPrefix(uid, name) {
 			taken[len(name)] = true
@@ -215,7 +207,7 @@ func serveTaskCommand(c net.Conn, serve func(net.Conn, message) error) {
 	_ = serve(c, m)
 }
 
-func (s *daemonTasks) findNativeShell(ref, identity string) (*tmuxTask, localShellRecord, error) {
+func (s *daemonTasks) findNativeShell(ref, identity string) (*shellTask, localShellRecord, error) {
 	task := s.shell(canonicalTaskUID(identity))
 	if task == nil || task.hosted {
 		return nil, localShellRecord{}, nil
@@ -269,10 +261,7 @@ func (s *daemonTasks) registerResource(record resourceRecord, cancel context.Can
 		cancel()
 		return nil
 	}}
-	if s.resources == nil {
-		s.resources = make(map[string]*daemonResourceTask)
-	}
-	s.resources[record.UID] = task
+	s.insertLocked(record.UID, task)
 	s.mu.Unlock()
 	s.inventoryChanged(record.UID)
 	return task, nil
@@ -338,7 +327,7 @@ func (t *daemonResourceTask) stopTask() error {
 
 func (s *daemonTasks) finishResource(t *daemonResourceTask) {
 	s.mu.Lock()
-	delete(s.resources, t.record.UID)
+	delete(s.entries, t.record.UID)
 	t.mu.Lock()
 	close(t.done)
 	t.mu.Unlock()
@@ -373,7 +362,7 @@ func (s *daemonTasks) serveTaskStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *daemonTasks) confirmedResourceLocked(change resourceMutation, id string) *daemonResourceTask {
-	task := s.resources[id]
+	task, _ := s.entries[id].(*daemonResourceTask)
 	if task != nil && task.matches(change) {
 		return task
 	}

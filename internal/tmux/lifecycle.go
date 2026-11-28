@@ -7,12 +7,12 @@ import (
 
 // Events connects terminal transitions to the application. These callbacks are
 // called with the task guard released. Exit runs before streams are closed.
-type Events[A attachmentOwner, T any] struct {
-	Changed        func(...string)
-	Exit           func(A, Exit)
-	ParentEnded    func(T, bool)
-	StopFailed     func(error)
-	AttachmentLost func(controlErr, releaseErr error)
+type Events struct {
+	Changed     func(...string)
+	Exit        func(*Attachment, Exit)
+	ParentEnded func(string, bool)
+	StopFailed  func(error)
+	Closed      func()
 }
 
 type Exit struct {
@@ -21,7 +21,7 @@ type Exit struct {
 	Reason string
 }
 
-func (t *Task[A, T]) changed() {
+func (t *Session) changed() {
 	if t.events.Changed != nil {
 		var ids []string
 		for node := t.node; node != nil; node = node.Parent() {
@@ -31,14 +31,14 @@ func (t *Task[A, T]) changed() {
 	}
 }
 
-// ExpireUnstarted closes a task that has no terminal when the timer fires.
-func (t *Task[A, T]) ExpireUnstarted(after time.Duration) {
+// expireUnstarted closes a session that has no terminal when the timer fires.
+func (t *Session) expireUnstarted(after time.Duration) {
 	t.guard.Lock()
 	defer t.guard.Unlock()
-	if !t.Started() && !t.Exited() {
+	if !t.startedLocked() && !t.exited() {
 		t.setTimer(after, func() {
 			t.guard.Lock()
-			if t.Started() {
+			if t.startedLocked() {
 				t.guard.Unlock()
 				return
 			}
@@ -52,7 +52,7 @@ func (t *Task[A, T]) ExpireUnstarted(after time.Duration) {
 }
 
 // Close withdraws the task from the tree and closes its streams and terminal.
-func (t *Task[A, T]) Close() {
+func (t *Session) Close() {
 	t.guard.Lock()
 	owner, ok := t.beginCloseLocked()
 	t.guard.Unlock()
@@ -62,7 +62,7 @@ func (t *Task[A, T]) Close() {
 }
 
 // Only the caller that withdraws the task may publish its completion.
-func (t *Task[A, T]) beginCloseLocked() (owner A, ok bool) {
+func (t *Session) beginCloseLocked() (owner *Attachment, ok bool) {
 	if t.closing {
 		return owner, false
 	}
@@ -70,23 +70,26 @@ func (t *Task[A, T]) beginCloseLocked() (owner A, ok bool) {
 	return t.endLocked(), true
 }
 
-func (t *Task[A, T]) completeClose(owner A) {
-	t.closePendingTerminals()
-	var empty A
-	if owner != empty {
-		owner.stream().Close()
+func (t *Session) completeClose(owner *Attachment) {
+	t.cancelPending()
+	if owner != nil {
+		owner.Close()
 	}
 	if t.terminal != nil {
 		_ = t.terminal.Close()
 	}
-	t.manager.complete(t)
+	t.manager.remove(t)
+	if t.events.Closed != nil {
+		t.events.Closed()
+	}
+	close(t.done)
 	t.changed()
 }
 
 // Stop requests process termination and waits for the terminal to close.
-func (t *Task[A, T]) Stop(reason string) error {
+func (t *Session) Stop(reason string) error {
 	t.guard.Lock()
-	if t.Exited() || t.Stopping() {
+	if t.exited() || t.stoppingLocked() {
 		t.guard.Unlock()
 		return t.waitForClose(5*time.Second, "shell has not finished stopping")
 	}
@@ -98,7 +101,17 @@ func (t *Task[A, T]) Stop(reason string) error {
 	return t.stopTerminal()
 }
 
-func (t *Task[A, T]) stopTerminal() error {
+func (t *Session) cancelPending() {
+	t.guard.Lock()
+	pending := t.pending
+	t.guard.Unlock()
+	if pending != nil {
+		pending.Close()
+	}
+}
+
+func (t *Session) stopTerminal() error {
+	t.cancelPending()
 	t.guard.Lock()
 	terminal := t.terminal
 	t.guard.Unlock()
@@ -108,7 +121,7 @@ func (t *Task[A, T]) stopTerminal() error {
 	}
 	if err := terminal.Stop(); err != nil {
 		t.guard.Lock()
-		if !t.Exited() {
+		if !t.exited() {
 			t.stopReason = ""
 		}
 		t.guard.Unlock()
@@ -119,7 +132,7 @@ func (t *Task[A, T]) stopTerminal() error {
 	return t.waitForClose(10*time.Second, "shell process ended, but terminal cleanup timed out")
 }
 
-func (t *Task[A, T]) waitForClose(timeout time.Duration, detail string) error {
+func (t *Session) waitForClose(timeout time.Duration, detail string) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -130,7 +143,7 @@ func (t *Task[A, T]) waitForClose(timeout time.Duration, detail string) error {
 	}
 }
 
-func (t *Task[A, T]) terminalExited(err error) {
+func (t *Session) terminalExited(err error) {
 	t.guard.Lock()
 	owner, ok := t.beginCloseLocked()
 	exit := Exit{Err: err, Reason: t.stopReason}

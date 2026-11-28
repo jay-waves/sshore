@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
-func (s *tmuxTask) relayResourceRoute(c net.Conn, request message) error {
+func (s *shellTask) relayResourceRoute(c net.Conn, request message) error {
 	hop := request.ResourceRoute[0]
 	if len(request.ResourceRoute) >= maxConnectionHops || hop.Parent != s.record.UID {
 		return fmt.Errorf("resource route parent changed")
@@ -16,16 +18,21 @@ func (s *tmuxTask) relayResourceRoute(c net.Conn, request message) error {
 	if len(request.ResourceRoute) != 0 {
 		next = request.ResourceRoute[0].Parent
 	}
-	s.mu.Lock()
-	route := s.shellRoutes[hop.Token]
-	valid := !s.runtime.Exited() && !s.runtime.Stopping() && route != nil && route.target.uid == next && route.drain.Err() == nil
-	s.mu.Unlock()
-	if !valid {
-		return fmt.Errorf("resource route is unavailable")
+	var route *shellRoute
+	if err := s.session.Inspect(func(state tmux.Snapshot) error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		route = s.shellRoutes[hop.Token]
+		if state.State == tmux.StateExited || state.Stopping || route == nil || route.target.record.UID != next || route.drain.Err() != nil {
+			return fmt.Errorf("resource route is unavailable")
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(route.drain, requestTimeout)
 	defer cancel()
-	stream, err := route.target.resource(ctx)
+	stream, err := openHostedEndpoint(ctx, next)
 	if err != nil {
 		return fmt.Errorf("open independent resource route: %w", err)
 	}

@@ -70,32 +70,14 @@ Remote output, public names, task IDs and inventory records are not
 capabilities. Local control requires private state and authentication. Remote
 operations remain constrained by the authenticated account and SSH server policy.
 
-Local attachment handoff is accepted through authenticated local control, never
-inferred from terminal output. A nested remote shell is executed by the daemon on
-its initiating host, using that host's configuration and signing credentials. The terminal client
-receives an attachment route, not an instruction to execute the remote command or
-use the root account's credentials for the next hop. Child readiness is required
-before the launcher reports success. The authenticated daemon tracks the parent scope.
+Same-host attachment handoff requires authenticated local control. The daemon binds each private
+route to its parent and child task instances. A shell that starts an SSH login runs its own client
+using the initiating host's SSH configuration and credentials. The outer client continues to serve
+its original attachment. Terminal output cannot select an SSH destination or grant approval.
 
-Routes are private capabilities bound to the parent shell instance. Each route
-opens authenticated endpoints to the fixed child instance, using local daemon
-connections or native channels on the initiating daemon's SSH session.
-Reattachment and short file transfers reuse the attachment route. For approved
-mounts and forwards, a live route identifies each trusted initiating daemon and
-the exact destination task during startup. Each remote hop opens a fresh SSH
-connection using its original initiating host's configuration and credentials.
-An expired route or changed parent blocks startup. Remote-supplied aliases never
-select destinations in the terminal client's SSH configuration. After startup,
-the resource owns its connections and remains available when a source or
-ancestor shell exits.
-
-Route messages and terminal output grant no resource approval. Host-key
-confirmation and interactive answers use a private authenticated broker on the
-initiating host. Nested shell launchers close their broker after handoff. Resource
-redials on those hosts require known host keys and noninteractive SSH
-authentication. Standard SSH
-`ProxyJump` uses the initiating SSH client's usual authentication for its jump
-chain. Private keys and interactive answers stay on the initiating host.
+For an operation requested from B over a login started in A, A is the origin and handles approval.
+Approved mounts and forwards own their connections after startup. Resource workers use an
+authenticated broker for interactive SSH prompts. Private keys stay on the initiating host.
 
 Managed shell channels reach the account daemon's loopback TCP endpoint through
 SSH TCP forwarding. Every channel authenticates with the account capability before
@@ -222,8 +204,7 @@ and resource routes require the registered instance. Recent targets supply
 connection defaults and carry no typed passwords or takeover authority.
 
 The authenticated starting lease owns the lifetime of a top-level shell.
-A same-host nested shell follows the registered parent task. A cross-host
-child uses a lease scoped to that parent. Native local shell leases end when
+A same-host nested shell follows the registered parent task. Each SSH login starts its own root. Native local shell leases end when
 their loopback connections close. SSH shell leases also expire on a missed
 heartbeat.
 
@@ -370,8 +351,7 @@ invoking the prepared executable to apply it. Install help is read-only.
 
 Public inventory is an allowlist: it excludes control addresses/tokens, SSH options
 and terminal contents. Shell process listings show sanitized same-user names and
-PIDs, excluding arguments and environments. Live tree edges describe registered parent shells or the holder of a live
-cross-host owner lease. Tree reservations and private child routes authorize
+PIDs, excluding arguments and environments. Live tree edges describe registered parents within one daemon. Tree reservations and private child routes authorize
 foreground handoffs and stay outside the public inventory. Foreground summaries and detailed resource
 status can reveal working-directory/project names, paths, ports and errors.
 

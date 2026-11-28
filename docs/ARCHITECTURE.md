@@ -48,17 +48,15 @@ The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](../README.md#os-and-shell-support)
 and [native PTY adapters](../internal/pty/).
 
-The [shell package](../internal/shell/) prepares the executable, argument vector and startup
-options. The CLI and terminal UI also use it to parse and display commands.
-The [launch adapter](../cmd/sshore/tmux_startup.go) supplies account settings to tmux.
-`new -- PROGRAM` passes that argument vector to the managed PTY.
+The [tmux manager](../internal/tmux/manager.go) owns live local and hosted sessions.
+On first attachment, [tmux startup](../internal/tmux/startup.go) uses the
+[shell package](../internal/shell/) to choose the executable and profile options,
+then starts and owns the PTY. `new -- PROGRAM` supplies an explicit argument vector.
 PowerShell startup embeds its [directory reporting script](../internal/shell/pwsh_directory.ps1).
 `sh HOST -- COMMAND` uses SSH exec with standard streams and no PTY.
-The [tmux manager](../internal/tmux/manager.go) owns live local and hosted sessions,
-their terminal input and output, and their lifetime. `sshore` checks SSH access,
-supplies launch settings, and publishes tmux snapshots and resource rows to bbolt.
-The manager checks the full session ID again before acting on a published selection.
-The [terminal tree](../internal/tmux/tree.go) reserves input during attachment
+The account daemon supplies the working directory and environment and publishes task rows to bbolt.
+The initiating client owns SSH. The host daemon authenticates each incoming task stream.
+The daemon resolves selections by full task ID. The [terminal tree](../internal/tmux/tree.go) reserves input during attachment
 and rolls back the reservation and any new parent edge if setup fails.
 The [PTY package](../internal/pty/) owns child processes, native handles, sizing
 and process cleanup. The [terminal package](../internal/term/) handles keyboard
@@ -108,17 +106,20 @@ Cycling between idle roots keeps each root in its existing tree.
 A root follows its starting connection. A native local root uses the lifetime
 of its loopback connection so system sleep does not expire its lease.
 A same-host child follows its parent.
-For a cross-host child the initiating daemon holds an authenticated SSH route
-scoped to the parent. Re-entering that child uses the same route. Each daemon
-makes its own attachment decisions. Explicit detach records a pin before
+Running `sshore sh B` inside A starts a foreground SSH client in A's terminal.
+B hosts an independent root session. In B, `sshore detach` returns to A and retains B.
+The outer client handles its shortcut prefix. Press `Ctrl+B` twice to pass the prefix to B.
+`exit` ends B and returns to A. Explicit detach records a pin before
 releasing input and keeps the existing parent edge. When the owner ends, a
 pinned child survives as a root with its own descendants. An internal handoff
 preserves the original scope and pin. See [tree admission](../internal/tmux/tree.go),
-[retention](../internal/tmux/retention.go) and [attachment protocol](../cmd/sshore/tmux_attachment.go).
+[retention](../internal/tmux/retention.go) and [attachment protocol](../cmd/sshore/shell_attachment.go).
 
-The daemon checks the client release on `attach`. tmux claims the single-use
-terminal token, starts input after `ready`, and releases input when the control
-loop ends. Closing a session also closes its unclaimed terminal streams.
+The daemon checks the client release and pairs terminal channels with a
+[single-use token](../cmd/sshore/terminal_endpoint.go). tmux takes the connected
+stream and holds its input reservation while sending `ready` and replaying modes
+with the session lock released. Stopping the session cancels a pending attachment.
+The daemon closes unclaimed streams on exit and checks approvals atomically.
 
 The authenticated exit frame carries the exit code and terminal output offset.
 The frontend drains the reported tail within a time budget and reports the
@@ -155,7 +156,6 @@ connections after startup, so exiting a source or ancestor shell leaves the
 resource running. Mount and forward configuration travels in the authenticated
 launch request.
 Each TCP connection or UDP sender gets a stream in the forward rule's smux session.
-Intermediate hosts relay the resource stream as bytes.
 The [ports package](../internal/ports) owns endpoint discovery, listeners, target
 dials and worker shutdown. The application supplies the authenticated transport
 and the startup exchange for the approved rule.
@@ -173,14 +173,14 @@ before changing update, reset or approval behavior.
 
 ### Inventory and diagnostics
 
-`pstree` follows shell parent UIDs across hosts. Both views group by SSH destination, with
+`pstree` follows shell parent UIDs within each daemon. Both views group by SSH destination, with
 `local` first. `list` shows the observed SSH address, OS, architecture, and hostname when
 available. Conflicting snapshots for the same SSH name leave only the name.
 Clients record recent connections, detaches, and remote observations in `connections/participation.db`.
 Remote output refreshes the attachment at most once a minute. Detach history ranks remote shell UIDs.
-Both views, CLI target lookup and detached-shell selection read bbolt. The running
-daemon supplies authenticated routes to cross-host children. Live rows belong to
-the daemon that currently owns the account lock.
+Both views and task selection read bbolt. Before serving, the account daemon replaces the live
+rows in one transaction. Each daemon records its own sessions. A remote reattachment uses the saved SSH
+connection for the selected UID.
 Live rows are keyed by full UID. Short IDs are checked against saved observations
 for ambiguity. A terminal and its affected ancestors commit together.
 Readers omit starting and exited shells. The host reads its registered hosted shells from bbolt and

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -12,94 +11,67 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/pty"
-	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
-// tmuxTask binds the shared terminal state to daemon registration and routing.
-type tmuxTask struct {
+// shellTask is the daemon endpoint for a terminal session.
+type shellTask struct {
 	hostedState
 	handoff *localHandoff
-	mu      sync.Mutex // Protect shell state and attachment ownership.
-	runtime *tmux.Task[*attachment, *tmuxTask]
+	mu      sync.Mutex // Protect daemon routes, protocol streams and approvals.
+	session *tmux.Session
 
-	registry       *daemonTasks
-	log            io.Writer
-	cgroup         string
-	cgroupErr      error
-	record         localShellRecord // Immutable after registration.
-	environment    []string
-	hosted         bool
-	remoteChildren map[*shellTarget]struct{}
+	registry    *daemonTasks
+	log         io.Writer
+	record      localShellRecord // Immutable after registration.
+	environment []string
+	hosted      bool
+	frontends   map[*tmux.Attachment]*attachment // Keep protocol state through detach acknowledgement.
+	terminals   map[string]*pendingTerminal
 }
 
-func (s *tmuxTask) taskName() string { return s.record.Name }
+func (s *shellTask) taskName() string { return s.record.Name }
 
-func (s *tmuxTask) expired() bool {
-	select {
-	case <-s.runtime.Done():
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *tmuxTask) snapshot() shellView {
-	state := s.runtime.Snapshot()
+func (s *shellTask) snapshot() shellView {
+	state := s.session.Snapshot()
 	view := shellView{Owner: taskKey(state.OwnerID), Pinned: state.Pinned, PinUntil: state.PinUntil,
 		Instance: state.ID, Name: state.Name, PID: state.PID, Shell: state.Process.Shell,
 		Program: state.Process.ProgramLine != "", ProgramLine: state.Process.ProgramLine, State: state.State,
-		DetachedAt: state.DetachedAt, Stopping: state.Stopping, RemoteOwner: state.RemoteOwner,
-		Directory: cmp.Or(state.Directory, s.record.Directory)}
-	if active := state.Active; active != nil {
+		DetachedAt: state.DetachedAt, Stopping: state.Stopping,
+		Directory: state.Directory}
+	if active := s.frontend(state.Active); active != nil {
 		view.SourceHost = active.sourceHost
 	}
 	return view
 }
 
-func currentShellDirectory(pid int, reported string) string {
-	if reported != "" || pid <= 0 {
-		return reported
-	}
-	directory, err := sys.WorkingDirectory(pid)
-	if err != nil {
-		return ""
-	}
-	return directory
-}
-
-// Call with mu held. Use the startup directory when the shell's location is unavailable.
-func (s *tmuxTask) directoryOrStartupLocked() string {
-	return cmp.Or(currentShellDirectory(s.runtime.PID(), s.runtime.Directory()), s.record.Directory)
-}
-
-func (s *tmuxTask) treeIdentity() string {
+func (s *shellTask) treeIdentity() string {
 	if s.hosted || validTaskUID(s.record.UID) {
 		return taskKey(s.record.UID)
 	}
 	return (localShellRecord{Token: s.record.Token}).identity()
 }
 
-func (s *tmuxTask) stopTask() error {
+func (s *shellTask) stopTask() error {
 	return s.kill(s.record.UID, "killed by sshore kill")
 }
 
-func (s *tmuxTask) kill(instance, reason string) error {
+func (s *shellTask) kill(instance, reason string) error {
 	if s.hosted && (instance == "" || instance != s.record.UID) {
 		return fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
-	return s.runtime.Stop(reason)
+	return s.session.Stop(reason)
 }
 
-func (s *tmuxTask) serveTask(c net.Conn, m message) error {
+func (s *shellTask) serveTask(c net.Conn, m message) error {
 	if s.hosted {
 		return s.serveHostedIngress(c, m)
 	}
 	return s.serveLocalTask(c, m)
 }
 
-func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, message) error) (bool, error) {
+func (s *shellTask) serveCommand(c net.Conn, m message, extra func(*attachment, message) error) (bool, error) {
 	var reply message
 	switch m.Type {
 	case "tree_hold":
@@ -108,9 +80,7 @@ func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, m
 		if err := checkPeerVersion(m.SoftwareVersion, "terminal client"); err != nil {
 			return true, err
 		}
-		return true, s.runtime.OfferTerminal(c, func(token string) error {
-			return writeMessage(c, message{Type: "terminal_ready", SoftwareVersion: version, Token: token})
-		})
+		return true, s.offerTerminal(c)
 	case "attach":
 		if err := checkPeerVersion(m.SoftwareVersion, "client"); err != nil {
 			return true, writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
@@ -129,10 +99,14 @@ func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, m
 		if err := checkPeerVersion(m.SoftwareVersion, "client"); err != nil {
 			return true, writeMessage(c, message{Type: "error", Error: err.Error()})
 		}
-		p, until, err := s.runtime.RequestDetach(time.Duration(m.TTLNanos))
+		active, until, err := s.session.RequestDetach(time.Duration(m.TTLNanos))
 		reply = message{Type: "pinned", PinUntil: until}
 		if err == nil {
-			err = p.controlMessage(message{Type: "detach_requested"})
+			if frontend := s.frontend(active); frontend != nil {
+				err = frontend.controlMessage(message{Type: "detach_requested"})
+			} else {
+				err = fmt.Errorf("shell has no active attachment")
+			}
 		}
 		if err != nil {
 			reply = message{Type: "error", Error: err.Error()}
@@ -155,12 +129,11 @@ func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, m
 	return true, writeMessage(c, reply)
 }
 
-// Call with mu held.
 func shellSize(m message) pty.Size {
 	return pty.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}
 }
 
-func (s *tmuxTask) reportTerminalExit(p *attachment, exit tmux.Exit) {
+func (s *shellTask) reportTerminalExit(active *tmux.Attachment, exit tmux.Exit) {
 	reason := exit.Reason
 	if reason == "" {
 		reason = "shell exited"
@@ -176,7 +149,7 @@ func (s *tmuxTask) reportTerminalExit(p *attachment, exit tmux.Exit) {
 		}
 	}
 	termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Info, "Shell exited (code %d): %s", exit.Code, cleanText(reason))
-	if p != nil {
+	if p := s.frontend(active); p != nil {
 		p.finishExit(message{
 			Type: "exit", Code: exit.Code, Reason: reason,
 			DaemonShutdown: s.registry.isShuttingDown(),

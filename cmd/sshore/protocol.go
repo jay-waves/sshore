@@ -78,6 +78,7 @@ type message struct {
 	Instance         string              `json:"instance,omitempty"`
 	Token            string              `json:"token,omitempty"`
 	HandoffToken     string              `json:"handoff_token,omitempty"`
+	CanApprove       bool                `json:"can_approve,omitzero"`
 	ApprovalID       string              `json:"approval_id,omitempty"`
 	Directory        string              `json:"directory,omitempty"`
 	HomeDirectory    string              `json:"home_directory,omitempty"`

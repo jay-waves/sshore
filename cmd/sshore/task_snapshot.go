@@ -50,15 +50,15 @@ func (r resourceView) kindAndName() (string, string) {
 }
 
 type shellView struct {
-	Hosted      bool      `json:"-"`
-	HostInfo    hostInfo  `json:"host_info,omitzero"`
-	SourceHost  string    `json:"source_host,omitempty"`
-	Owner       string    `json:"owner,omitempty"`
-	Pinned      bool      `json:"pinned,omitempty"`
-	PinUntil    time.Time `json:"pin_until,omitzero"`
-	DetachedAt  time.Time `json:"detached_at,omitzero"`
-	Stopping    bool      `json:"stopping,omitempty"`
-	RemoteOwner bool      `json:"remote_owner,omitempty"`
+	Hosted     bool      `json:"-"`
+	HostInfo   hostInfo  `json:"host_info,omitzero"`
+	SourceHost string    `json:"source_host,omitempty"`
+	Owner      string    `json:"owner,omitempty"`
+	Pinned     bool      `json:"pinned,omitempty"`
+	PinUntil   time.Time `json:"pin_until,omitzero"`
+	DetachedAt time.Time `json:"detached_at,omitzero"`
+	Stopping   bool      `json:"stopping,omitempty"`
+
 	Instance    string    `json:"instance,omitempty"`
 	Host        string    `json:"host,omitempty"`
 	Name        string    `json:"name"`
@@ -141,11 +141,27 @@ func (inv inventory) incompleteError() error {
 
 var liveTasksBucket = []byte("live-task-rows")
 
+// Only the daemon holding the account lock can start a generation.
+func (a *daemonActivity) startInventory() error {
+	return historyTransaction(a.root, true, func(tx *bolt.Tx) error {
+		if tx.Bucket(liveTasksBucket) != nil {
+			if err := tx.DeleteBucket(liveTasksBucket); err != nil {
+				return err
+			}
+		}
+		bucket, err := tx.CreateBucket(liveTasksBucket)
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte("instance"), []byte(a.instance))
+	})
+}
+
 // Serialize projection and commit so delayed notifications always read the latest state.
 func (a *daemonActivity) publishRows(keys ...string) {
 	a.inventoryMu.Lock()
 	defer a.inventoryMu.Unlock()
-	if a.instance == "" {
+	if a.inventoryClosed {
 		return
 	}
 	if a.pendingRows == nil {
@@ -163,21 +179,8 @@ func (a *daemonActivity) publishRows(keys ...string) {
 	}
 	err := historyTransaction(a.root, true, func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(liveTasksBucket)
-		if bucket != nil && string(bucket.Get([]byte("instance"))) != a.instance {
-			if err := tx.DeleteBucket(liveTasksBucket); err != nil {
-				return err
-			}
-			bucket = nil
-		}
 		if bucket == nil {
-			var err error
-			bucket, err = tx.CreateBucket(liveTasksBucket)
-			if err != nil {
-				return err
-			}
-			if err := bucket.Put([]byte("instance"), []byte(a.instance)); err != nil {
-				return err
-			}
+			return bolt.ErrBucketNotFound
 		}
 		for key, row := range rows {
 			if row == nil {
@@ -237,10 +240,11 @@ func (a *daemonActivity) currentRow(key string) any {
 		return peerView{Manager: p.Manager, UID: p.UID, ID: p.ID, Detail: p.Detail}
 	}
 	switch t := a.tasks.lookup(key).(type) {
-	case *tmuxTask:
+	case *shellTask:
 		view := t.snapshot()
-		if !t.expired() && view.State != taskExited {
+		if view.State != taskExited {
 			return liveTaskRow{Shell: &view, Hosted: t.hosted}
+
 		}
 	case *daemonResourceTask:
 		t.mu.Lock()
@@ -256,7 +260,7 @@ func (a *daemonActivity) currentRow(key string) any {
 func (a *daemonActivity) closeInventory() {
 	a.inventoryMu.Lock()
 	defer a.inventoryMu.Unlock()
-	a.instance = ""
+	a.inventoryClosed = true
 	if a.inventoryRetry != nil {
 		a.inventoryRetry.Stop()
 	}
@@ -313,6 +317,21 @@ func (inv *inventory) readPrefix(bucket *bolt.Bucket, prefix []byte) error {
 	return nil
 }
 
+func (inv *inventory) readTaskRows(bucket *bolt.Bucket, id string) error {
+	if bucket == nil {
+		return nil
+	}
+	if id != "" {
+		return inv.readPrefix(bucket, []byte(id))
+	}
+	return bucket.ForEach(func(key, data []byte) error {
+		if validTaskUID(string(key)) {
+			return inv.readLiveRow(key, data)
+		}
+		return nil
+	})
+}
+
 // The setup response advertises only hosted shells owned by the current daemon.
 func readHostedShells() ([]shellView, error) {
 	record, err := existingDaemonRecord()
@@ -322,11 +341,8 @@ func readHostedShells() ([]shellView, error) {
 	var rows []shellView
 	err = historyTransaction(record.Directory, false, func(tx *bolt.Tx) error {
 		bucket := currentLiveBucket(tx, record.UID)
-		if bucket == nil {
-			return nil
-		}
 		var inv inventory
-		if err := bucket.ForEach(inv.readLiveRow); err != nil {
+		if err := inv.readTaskRows(bucket, ""); err != nil {
 			return err
 		}
 		for _, shell := range inv.Shells {
@@ -334,7 +350,6 @@ func readHostedShells() ([]shellView, error) {
 				rows = append(rows, shell)
 			}
 		}
-
 		return nil
 	})
 	return rows, err

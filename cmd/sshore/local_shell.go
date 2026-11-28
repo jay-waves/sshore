@@ -35,7 +35,7 @@ func openNativeShell(ctx context.Context, ref, identity string) (net.Conn, local
 		if ref == "" {
 			return nil, localShellRecord{}, os.ErrNotExist
 		}
-		matches, err := (taskQuery{Kind: "native", Ref: ref}).published(record)
+		matches, err := (taskQuery{Kind: "native", Ref: ref}).published(record.Directory, record.UID)
 		if err != nil {
 			return nil, localShellRecord{}, err
 		}
@@ -131,7 +131,7 @@ func retentionLocalShell(identity string, m message) error {
 	return requestShellRetention(c, m)
 }
 
-func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, parent *tmuxTask, ready func(localShellRecord) error) error {
+func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, parent *shellTask, ready func(localShellRecord) error) error {
 	if record.Version != version || len(record.Token) != 64 || !filepath.IsAbs(record.Directory) {
 		return fmt.Errorf("invalid local startup request")
 	}
@@ -140,16 +140,15 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, pa
 	if err != nil {
 		return err
 	}
-	defer s.runtime.Close()
+	defer s.session.Close()
 	if err := ready(s.record); err != nil {
 		return err
 	}
-	s.runtime.ExpireUnstarted(15 * time.Second)
-	<-s.runtime.Done()
+	<-s.session.Done()
 	return nil
 }
 
-func (s *tmuxTask) serveLocalTask(c net.Conn, m message) error {
+func (s *shellTask) serveLocalTask(c net.Conn, m message) error {
 	switch m.Type {
 	case "handoff_confirm":
 		return s.confirmHandoff(c, m)
@@ -167,14 +166,12 @@ func (s *tmuxTask) serveLocalTask(c net.Conn, m message) error {
 	return fmt.Errorf("unexpected local request")
 }
 
-func (s *tmuxTask) localAttachmentCommand(p *attachment, m message) error {
+func (s *shellTask) localAttachmentCommand(p *attachment, m message) error {
 	switch m.Type {
 	case "handoff_result":
 		s.finishHandoff(p, m)
 	case "sh_child":
-		s.mu.Lock()
-		h := &clientHandoff{Shell: (options{command: "sh", local: true, host: "local", pin: m.Pinned}).shellConfig(), Directory: s.directoryOrStartupLocked(), Environment: append([]string(nil), s.environment...)}
-		s.mu.Unlock()
+		h := &clientHandoff{Shell: (options{command: "sh", local: true, host: "local", pin: m.Pinned}).shellConfig(), Directory: s.session.WorkingDirectory(), Environment: append([]string(nil), s.environment...)}
 		if m.Directory != "" {
 			h.Directory = m.Directory
 		}
@@ -221,7 +218,7 @@ type localStartup struct {
 type hostedShellRequest struct {
 	Directory, Name string
 	Env             []string
-	parent          *tmuxTask
+	parent          *shellTask
 }
 
 func createHostedShell(ctx context.Context, executable, name, cwd string, env []string) (localShellRecord, error) {

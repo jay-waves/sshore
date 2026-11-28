@@ -192,13 +192,6 @@ func daemonRoutes(record localShellRecord, activity *daemonActivity, stop func()
 	mux.HandleFunc("POST /resources/for-host", tasks.serveResourcesForHost)
 	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
 	mux.HandleFunc("POST /tasks/stop", tasks.serveTaskStop)
-	mux.HandleFunc("POST /tasks/remote-children", func(w http.ResponseWriter, r *http.Request) {
-		var q remoteChildQuery
-		if !readDaemonBody(w, r, &q) {
-			return
-		}
-		_ = json.MarshalWrite(w, tasks.remoteChildCandidates(q.Parent, q.Ref))
-	})
 	mux.HandleFunc("POST /tasks/native/open", tasks.openNative)
 	mux.HandleFunc("POST /tasks/{id}/open", tasks.open)
 	mux.HandleFunc("POST /leases", func(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +206,7 @@ func daemonRoutes(record localShellRecord, activity *daemonActivity, stop func()
 		if !readDaemonBody(w, r, &req) {
 			return
 		}
-		shell := req.Kind == "shell" || req.Kind == "remote-shell" && validSession(req.Record.Name) == nil
+		shell := req.Kind == "shell"
 		resource := req.Kind == "resource" && req.Resource != nil
 		if !(shell || resource) || !filepath.IsAbs(req.Record.Directory) {
 			http.Error(w, "invalid launch", 400)

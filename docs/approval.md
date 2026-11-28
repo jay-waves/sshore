@@ -62,7 +62,7 @@ a directory starts a child shell through the normal `sh` handoff. While browsing
 frontend routes input and screen output to the picker and pauses the command editor.
 Cancelling restores the command prompt. With no shell attached, `lf` browses locally
 and opens a local shell.
-Windows hosted SSH shells currently lack nested routes.
+Windows hosted shells currently lack same-host child handoff.
 
 An explicit console command uses the existing shell or task-control rules. Resource
 requests from the attached shell still require the local approval flow above. Keep

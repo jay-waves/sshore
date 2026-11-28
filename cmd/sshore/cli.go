@@ -135,7 +135,7 @@ func runShell(parsed cliArguments) (int, error) {
 		}
 		o.argv = launch.Args
 	}
-	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
+	return executeShellCommand(o)
 }
 
 func runTargetCommand(parsed cliArguments) (int, error) {
@@ -159,7 +159,7 @@ func runTargetCommand(parsed cliArguments) (int, error) {
 	if parsed.command == "kill" {
 		return runRemoteTaskStop(o)
 	}
-	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
+	return executeShellCommand(o)
 }
 
 func runRemoteTaskStop(o options) (int, error) {
@@ -275,28 +275,33 @@ type options struct {
 	taskIdentity     string
 	instance         string
 	parent           string
-	remoteOwned      bool
-	remoteParentKey  string
 	portOverrideOnly bool
 	sshDirectory     string
 	startupDirectory string
 }
 
 func executeShellCommand(o options) (int, error) {
-	managedRemoteAttach := o.command == "attach" && !o.local && (os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSHORE_LOCAL_SESSION") != "")
-	if managedRemoteAttach && o.session == "" && o.instance == "" {
-		return 1, usage("select a child by task ID")
+	if o.local {
+		// A local command console can outlive its last attached session.
+		stop, err := leaseActivity(leaseRequest{Kind: "heartbeat"})
+		if err != nil {
+			return 1, err
+		}
+		defer stop()
 	}
 	if o.command == "attach" && o.taskIdentity == "" {
 		var err error
 		if o.local && o.session == "" {
 			err = resolveDetachedAttach(&o, shellIdentityFromEnvironment())
-		} else if !o.local && !managedRemoteAttach {
+		} else if !o.local {
 			err = applyRecentConnection(&o)
 		}
 		if err != nil {
 			return 1, err
 		}
+	}
+	if !o.local {
+		return runClient(o)
 	}
 	if handled, err := handoffRemoteShell(o); handled {
 		if err != nil {
@@ -310,13 +315,8 @@ func executeShellCommand(o options) (int, error) {
 		}
 		return 0, nil
 	}
-	if managedRemoteAttach {
-		return 1, fmt.Errorf("remote attach from a managed shell requires an active terminal")
-	}
-	if o.local {
-		return runLocalCommand(o)
-	}
-	return runClient(o)
+
+	return runLocalCommand(o)
 }
 
 const localEndpointPrefix = "here:"

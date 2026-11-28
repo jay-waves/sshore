@@ -23,15 +23,14 @@
 - **Local / remote** Relative to the operation: local is the computer running the client or managing
   the resource; remote is its SSH destination. The remote account is the authenticated Unix account,
   excluding other users.
-- **Client** The sshore process interacting with the user. For nested attachments, the client at the
-  user's terminal continues to own input and shortcuts.
+- **Client** The sshore process interacting with the user. Each SSH login has its own client.
 - **Origin** The client side of a connection. In an attached shell, `origin:` (alias `0:`)
   addresses the attached client. For a mount or forward, the origin account owns the task.
   On the SSH host, `list` and `ps` (`pstree`) group these read-only records under `origin`.
   Each record refers to its own connection, so several clients can appear in this group.
 - **Daemon** The background process for an OS account, reached through one authenticated
-  loopback TCP endpoint. It owns the in-memory task table, activity leases and current metadata; no
-  daemon-crash recovery is promised. The daemon starts a separate worker for each mount.
+  loopback TCP endpoint. It owns the terminals, activity leases and mount workers. On startup it
+  replaces the live task list in bbolt and keeps the account's connection history.
 - **Activity lease** A daemon-owned registration retained by a live authenticated connection or an
   in-process owner. The shared daemon heartbeat detects lost clients. Releasing a lease ends that
   participation; persistent shell lifetime remains independent.
@@ -48,9 +47,8 @@
   change on reattachment and does not control the target shell's lifetime.
 - **Peer record** The read-only description of an origin-owned mount or forward on its SSH host.
 
-Nested attachments retain the initiating host's connection context through a
-private route. Switching attachments does not move SSH configuration or signing
-credentials to the user's computer. See
+Same-host switches share the current client. An SSH login started in a shell uses that host's
+SSH configuration and signing credentials. See
 [connection ownership](ARCHITECTURE.md#tmux-ownership-and-attachment).
 
 ## Requests and approval

@@ -12,7 +12,7 @@ server.
 
 | Command | Transport | Startup exchange |
 | --- | --- | --- |
-| `shell`, `new`, `attach` | The local daemon owns the SSH connection. Each attachment uses separate SSH TCP channels for control and terminal data. | An exec channel selects or creates the remote task. The daemon validates the version and data-channel token in the attach request. |
+| `shell`, `new`, `attach` | The initiating client owns the SSH connection. Each attachment uses separate SSH TCP channels for control and terminal data. | An exec channel selects or creates the remote task. The daemon validates the version and data-channel token in the attach request. |
 | `sh HOST -- COMMAND` | One SSH exec channel. | SSH starts the command and returns its exit status. |
 | `copy` | One SSH exec channel carries SFTP for the entire batch. | The service returns the version and remote home, then SFTP negotiates its protocol. |
 | `mount` | One SSH connection with sibling exec channels for SFTP and optional filesystem notifications. | Each service request selects data or notifications and gets one mount readiness reply. The data reply includes the account identity and remote home. |
@@ -20,11 +20,9 @@ server.
 | `ping` | An authenticated SSH connection for connection timing and echo probes. | Echo batches reuse one exec channel. |
 | `copy-id` | An SSH exec operation against the selected account. | The command uses SSH authentication to install the selected public key. |
 
-The local frontend and its daemon share a loopback connection with smux for
-remote shell setup and relaying. Over SSH, separate control and terminal channels
-give each path its own flow-control window. Reattaching through a live route can
-reuse its authenticated connection. An independent shell setup can establish
-a new SSH connection.
+Each SSH control or terminal channel has its own flow-control window. Same-host session switches
+can reuse the SSH transport. A connection started inside another shell uses that machine's client,
+SSH configuration and credentials. The outer session stays attached throughout.
 
 For SSH connections, `-v` and `--verbose` send diagnostics to stderr. These include the
 resolved endpoint and user, server version and host key fingerprint, identity file paths

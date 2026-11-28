@@ -22,9 +22,9 @@ type selectedTask struct {
 	attachable                     bool
 	Kind, Name, Identity, Instance string
 	Hosted                         bool
-	RemoteHost                     string            `json:",omitempty"` // Host of a remote attach candidate without a saved direct route.
-	Connection                     *recentConnection `json:",omitempty"`
-	Manager                        string            `json:",omitempty"` // A visible task without a control route.
+	RemoteHost                     string // Host of a remote attach candidate without a saved direct route.
+	Connection                     *recentConnection
+	Manager                        string // A visible task without a control route.
 }
 
 // IDs take precedence over aliases, including aliases that look like short hex
@@ -71,36 +71,17 @@ func matchTask(ref string, candidates []selectedTask) (selectedTask, error) {
 // Resolve ordinary selectors from bbolt. The account daemon rechecks the full
 // ID when the caller opens a stream or changes a task.
 func queryRegisteredTasks(q taskQuery) ([]selectedTask, error) {
-	record, err := existingDaemonRecord()
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
+	root, instance, err := accountDatabaseLocation(time.Second)
+	if err != nil || instance == "" {
 		return nil, err
 	}
-	return q.published(record)
+	return q.published(root, instance)
 }
 
-func (q taskQuery) published(record localShellRecord) ([]selectedTask, error) {
+func (q taskQuery) published(root, instance string) ([]selectedTask, error) {
 	var inv inventory
-	err := historyTransaction(record.Directory, false, func(tx *bolt.Tx) error {
-		bucket := currentLiveBucket(tx, record.UID)
-		if bucket == nil {
-			return nil
-		}
-		if q.UID != "" {
-			key := []byte(q.UID)
-			if data := bucket.Get(key); data != nil {
-				return inv.readLiveRow(key, data)
-			}
-			return nil
-		}
-		return bucket.ForEach(func(key, data []byte) error {
-			if validTaskUID(string(key)) {
-				return inv.readLiveRow(key, data)
-			}
-			return nil
-		})
+	err := historyTransaction(root, false, func(tx *bolt.Tx) error {
+		return inv.readTaskRows(currentLiveBucket(tx, instance), q.UID)
 	})
 	if err != nil {
 		return nil, err
@@ -129,7 +110,7 @@ func (q taskQuery) selectPublished(inv inventory) ([]selectedTask, error) {
 		}
 		row := selectedTask{Kind: "shell", Name: shell.Name, Identity: taskKey(shell.Instance),
 			Hosted: shell.Hosted, detachedAt: shell.DetachedAt,
-			attachable: shell.State == taskDetached && !shell.Stopping && !shell.RemoteOwner &&
+			attachable: shell.State == taskDetached && !shell.Stopping &&
 				(shell.Owner == "" || shell.Owner == q.Parent)}
 		if shell.Hosted {
 			row.Instance = shell.Instance
@@ -180,26 +161,6 @@ func (q taskQuery) selectPublished(inv inventory) ([]selectedTask, error) {
 	return rows, nil
 }
 
-type remoteChildQuery struct{ Parent, Ref string }
-
-func queryRemoteChildren(parent, ref string) ([]selectedTask, error) {
-	if activity := accountActivity.Load(); activity != nil && activity.tasks != nil {
-		return activity.tasks.remoteChildCandidates(parent, ref), nil
-	}
-	record, err := existingDaemonRecord()
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	var result []selectedTask
-	err = daemonJSON(ctx, record, "/tasks/remote-children", remoteChildQuery{parent, ref}, &result)
-	return result, err
-}
-
 // Selection reads the published account view. Opening or stopping the chosen UID
 // is a separate authenticated operation against its manager.
 func selectCLITask(parsed cliArguments) (selectedTask, error) {
@@ -212,19 +173,8 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 		return selectedTask{}, nil
 	}
 	attach := parsed.command == "attach"
-	var parent string
-	if attach {
-		parent = shellIdentityFromEnvironment()
-	}
-	var children []selectedTask
-	var err error
-	if parent != "" {
-		children, err = queryRemoteChildren(parent, ref)
-		if err != nil {
-			return selectedTask{}, err
-		}
-	}
-	candidates, err := publishedCandidates(children, attach, parent != "" && os.Getenv("SSHORE_SOCKET") != "", parsed.task.ref)
+	hostedOnly := attach && validTaskUID(os.Getenv("SSHORE_SOCKET"))
+	candidates, err := publishedCandidates(parsed.task.ref, attach, hostedOnly)
 	if err != nil {
 		return selectedTask{}, err
 	}
@@ -261,7 +211,8 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 	return target, nil
 }
 
-func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id string) ([]selectedTask, error) {
+func publishedCandidates(id string, attach, hostedOnly bool) ([]selectedTask, error) {
+	var candidates []selectedTask
 	root, instance, err := accountDatabaseLocation(time.Second)
 	if err != nil {
 		return nil, err
@@ -269,26 +220,9 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 	err = historyTransaction(root, false, func(tx *bolt.Tx) error {
 		inv := emptyInventory()
 		bucket := currentLiveBucket(tx, instance)
-		if bucket != nil {
-			switch {
-			case validTaskUID(id):
-				key := []byte(id)
-				if data := bucket.Get(key); data != nil {
-					if err := inv.readLiveRow(key, data); err != nil {
-						return err
-					}
-				}
-			case id != "":
-				if err := inv.readPrefix(bucket, []byte(id)); err != nil {
-					return err
-				}
-			default:
-				if err := bucket.ForEach(inv.readLiveRow); err != nil {
-					return err
-				}
-			}
+		if err := inv.readTaskRows(bucket, id); err != nil {
+			return err
 		}
-		before := len(candidates)
 		for _, s := range inv.Shells {
 			if taskHiddenFromInventory(s.State) || hostedOnly && !s.Hosted {
 				continue
@@ -305,7 +239,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 				candidates = append(candidates, selectedTask{Kind: kind, Name: name, Identity: r.Identity})
 			}
 		}
-		if validTaskUID(id) && len(candidates) > before {
+		if validTaskUID(id) && len(candidates) > 0 {
 			return nil
 		}
 		known := make(map[string]bool)
@@ -389,82 +323,6 @@ func killRegisteredTask(target selectedTask) (int, error) {
 	return 0, nil
 }
 
-func (tasks *daemonTasks) remoteChildCandidates(parent, ref string) []selectedTask {
-	if parent == "" {
-		return nil
-	}
-	s := tasks.shell(canonicalTaskUID(parent))
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var candidates []selectedTask
-	byID := isTaskIDPrefix(ref)
-	for child := range s.remoteChildren {
-		if byID && strings.HasPrefix(child.uid, ref) || !byID && child.name == ref {
-			candidates = append(candidates, selectedTask{
-				Kind: "shell", Name: child.name, Identity: taskKey(child.uid), Instance: child.uid, RemoteHost: child.host,
-			})
-		}
-	}
-	return candidates
-}
-
-func (s *tmuxTask) selectRemoteChild(config *shellConfig) (*shellTarget, error) {
-	if config.Name == "" && config.Instance == "" {
-		return nil, fmt.Errorf("select a child with sshore attach ID")
-	}
-	s.mu.Lock()
-	var children []*shellTarget
-	for child := range s.remoteChildren {
-		if child.host == config.Host && (config.Instance == "" || child.uid == config.Instance) {
-			children = append(children, child)
-		}
-	}
-	s.mu.Unlock()
-
-	// Status and ownership come from the child's authenticated endpoint.
-	type liveChild struct {
-		child *shellTarget
-		state string
-	}
-	live := make(map[string]liveChild)
-	var candidates []selectedTask
-	var lookupErr error
-	for _, child := range children {
-		status, err := child.status()
-		if err != nil {
-			lookupErr = fmt.Errorf("could not check child %s on %s: %w", child.uid[:6], cleanText(child.host), err)
-			continue
-		}
-		if status.Owner == s.treeIdentity() {
-			id := taskKey(child.uid)
-			live[id] = liveChild{child, status.Action}
-			candidates = append(candidates, selectedTask{Identity: id, Name: status.Name})
-		}
-	}
-	ref := config.Name
-	if config.Instance != "" {
-		ref = config.Instance
-	}
-	target, err := matchTask(ref, candidates)
-	if err != nil {
-		return nil, err
-	}
-	match, ok := live[target.Identity]
-	if !ok {
-		if lookupErr != nil {
-			return nil, lookupErr
-		}
-		return nil, fmt.Errorf("no live child matches %s on %s; enter it from the shell that opened it", cleanText(ref), cleanText(config.Host))
-	}
-	if match.state != taskDetached {
-		return nil, fmt.Errorf("child shell %s is %s; detach it before attaching", shortTaskObservation(target.Identity), cleanText(match.state))
-	}
-	return match.child, nil
-}
-
 func attachmentChoices(candidates []selectedTask) ([]sessionTarget, error) {
 	if len(candidates) > 128 {
 		return nil, fmt.Errorf("too many shells to list; specify a name or ID")
@@ -476,14 +334,12 @@ func attachmentChoices(candidates []selectedTask) ([]sessionTarget, error) {
 	return targets, nil
 }
 
-func (s *tmuxTask) sessionTargets(request message) message {
+func (s *shellTask) sessionTargets(request message) message {
 	reply := message{Type: "session_targets", Action: request.Action, Name: s.taskName()}
 	list := strings.HasPrefix(request.Action, consoleTargetLookup)
 	parentLookup := strings.HasPrefix(request.Action, consoleParentLookup)
 	if list {
-		s.mu.Lock()
-		reply.Directory = s.directoryOrStartupLocked()
-		s.mu.Unlock()
+		reply.Directory = s.session.WorkingDirectory()
 	}
 	query := taskQuery{Kind: "shell", Parent: s.treeIdentity(), Ref: request.Name, Detached: !parentLookup}
 	if s.hosted && !request.NativeTargets {

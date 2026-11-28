@@ -235,6 +235,15 @@ func runDaemon() (result error) {
 		return err
 	}
 	defer owner.Close()
+	path, err := daemonPath()
+	if err != nil {
+		return err
+	}
+	// A killed daemon can leave its endpoint behind. Withdraw it under the
+	// owner lock before opening the new generation of the account database.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if err := checkDeploymentAdmission(); err != nil {
 		return err
 	}
@@ -245,10 +254,6 @@ func runDaemon() (result error) {
 	defer listener.Close()
 	record.Address = listener.Addr().String()
 	record.ManagerPID = os.Getpid()
-	path, err := daemonPath()
-	if err != nil {
-		return err
-	}
 	log := os.Stderr // Background launches inherit the account log as stderr.
 	if standalone {
 		log, err = openDaemonLog(filepath.Dir(path))
@@ -259,6 +264,9 @@ func runDaemon() (result error) {
 	}
 	tasks := &daemonTasks{log: log, cgroup: group, cgroupErr: cgroupErr}
 	activity := &daemonActivity{tasks: tasks, root: record.Directory, instance: record.UID}
+	if err := activity.startInventory(); err != nil {
+		return fmt.Errorf("start task inventory: %w", err)
+	}
 	tasks.publishInventory = activity.publishRows
 	defer activity.closeInventory()
 	if err = writeStateJSON(path, record); err != nil {
@@ -422,11 +430,9 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 	_ = c.SetDeadline(time.Time{})
 
 	switch req.Kind {
-	case "remote-shell":
-		_ = runRemoteShell(c, req, tasks)
 	case "shell":
 		req.Record.Address, req.Record.Token = record.Address, record.Token
-		var parent *tmuxTask
+		var parent *shellTask
 		if req.Parent != "" {
 			task := tasks.shell(req.Parent)
 			if task == nil || task.hosted {

@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
-	"time"
 )
 
 type hostedState struct {
@@ -17,7 +16,7 @@ type hostedState struct {
 	resourceApproval resourceApproval
 }
 
-func (s *tmuxTask) serveHostedTask(c net.Conn, m message, relay func(net.Conn, message) error) (bool, error) {
+func (s *shellTask) serveHostedTask(c net.Conn, m message, relay func(net.Conn, message) error) (bool, error) {
 	if handled, err := s.serveCommand(c, m, s.hostedAttachmentCommand); handled {
 		return true, err
 	}
@@ -34,7 +33,7 @@ func (s *tmuxTask) serveHostedTask(c net.Conn, m message, relay func(net.Conn, m
 	return true, nil
 }
 
-func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) (*tmuxTask, error) {
+func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) (*shellTask, error) {
 	s, err := tasks.newShell(localShellRecord{Name: req.Name, Directory: req.Directory}, req.Env, req.parent, true)
 	if err != nil {
 		if errors.Is(err, errObjectNameInUse) {
@@ -42,8 +41,6 @@ func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) (*tmuxTask
 		}
 		return nil, err
 	}
-	// A failed initial attach should not leave an empty shell indefinitely.
-	s.runtime.ExpireUnstarted(30 * time.Second)
 	return s, nil
 }
 

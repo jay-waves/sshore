@@ -2,86 +2,78 @@ package tmux
 
 import (
 	"errors"
+	"slices"
 	"sync"
+	"time"
 )
 
-// Manager owns the live sessions for one account daemon. A published task ID
-// can resolve only to a session registered here by this daemon.
-type Manager[A attachmentOwner, T any] struct {
+// Manager owns a daemon's live terminal sessions and their parent tree.
+// Its zero value is ready to use.
+type Manager struct {
 	mu       sync.Mutex
-	forest   Forest[T]
-	sessions map[string]*Task[A, T]
+	forest   forest
+	sessions map[string]*Session
 }
 
-// NewSession prepares a session for registration. The caller supplies the ID
-// and name reserved in the account's shared shell and resource namespace.
-func (m *Manager[A, T]) NewSession(id, name string, value T, parent *Task[A, T], guard *sync.Mutex, events Events[A, T]) *Task[A, T] {
+type SessionConfig struct {
+	ID, Name     string
+	Parent       *Session
+	Process      ProcessConfig
+	StartTimeout time.Duration
+	RetryStart   bool
+	Events       Events
+}
+
+// Create registers a session. The first attachment starts its process.
+func (m *Manager) Create(config SessionConfig) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if config.ID == "" || m.sessions[config.ID] != nil {
+		return nil, errors.New("invalid or duplicate session ID")
+	}
+	if config.Parent != nil && config.Parent.manager != m {
+		return nil, errors.New("parent belongs to another session manager")
+	}
 	done := make(chan struct{})
-	t := &Task[A, T]{guard: guard, events: events, manager: m, name: name,
-		node: &treeNode[T]{id: id, Value: value, Label: id[:min(6, len(id))], done: done}, done: done}
-	if parent != nil {
-		m.forest.setParent(t.node, parent.node)
-	}
-	return t
-}
-
-// Register makes a prepared session visible and starts tracking its parent.
-func (m *Manager[A, T]) Register(t *Task[A, T]) error {
-	m.mu.Lock()
-	if m.sessions[t.node.id] != nil {
-		m.mu.Unlock()
-		return errors.New("session already exists")
-	}
+	config.Process.Environment = slices.Clone(config.Process.Environment)
+	session := &Session{events: config.Events, manager: m, name: config.Name,
+		config: config.Process, retryStart: config.RetryStart, node: &treeNode{id: config.ID, Label: config.ID[:min(6, len(config.ID))], done: done}, done: done}
 	if m.sessions == nil {
-		m.sessions = make(map[string]*Task[A, T])
+		m.sessions = make(map[string]*Session)
 	}
-	parent := t.node.Parent()
-	m.sessions[t.node.id] = t
-	m.mu.Unlock()
-	if parent != nil {
-		t.watchParent(parent)
+	m.sessions[config.ID] = session
+	if parent := config.Parent; parent != nil {
+		m.forest.setParent(session.node, parent.node)
 	}
-	return nil
+	if config.StartTimeout > 0 {
+		session.expireUnstarted(config.StartTimeout)
+	}
+	if parent := config.Parent; parent != nil {
+		session.watchParent(parent.node)
+	}
+	return session, nil
 }
 
-func (m *Manager[A, T]) Lookup(id string) (value T, ok bool) {
+func (m *Manager) Lookup(id string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if t := m.sessions[id]; t != nil {
-		return t.node.Value, true
-	}
-	return value, false
+	return m.sessions[id]
 }
 
-func (m *Manager[A, T]) Sessions() []T {
+func (m *Manager) Children(parent *Session) []*Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	values := make([]T, 0, len(m.sessions))
-	for _, t := range m.sessions {
-		values = append(values, t.node.Value)
-	}
-	return values
-}
-
-func (m *Manager[A, T]) Children(parent *Task[A, T]) []T {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var values []T
-	for _, t := range m.sessions {
-		if t.node.Parent() == parent.node {
-			values = append(values, t.node.Value)
+	var children []*Session
+	for _, session := range m.sessions {
+		if session.node.Parent() == parent.node {
+			children = append(children, session)
 		}
 	}
-	return values
+	return children
 }
 
-// Remove the session and publish completion under the same lock, before any
-// later full-ID lookup can return the finished session.
-func (m *Manager[A, T]) complete(t *Task[A, T]) {
+func (m *Manager) remove(t *Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.sessions[t.node.id] == t {
-		delete(m.sessions, t.node.id)
-	}
-	close(t.done)
+	delete(m.sessions, t.node.id)
 }
