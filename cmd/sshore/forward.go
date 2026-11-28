@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -342,30 +340,4 @@ func (d *diagnosticsTail) String() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return termui.CleanText(strings.TrimSpace(string(d.data)))
-}
-
-func runDaemonForward(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.Decoder, c net.Conn, request localDaemonRequest, tasks *daemonTasks) error {
-	f := *config.Forward
-	if err := validateForwardConfig(f); err != nil {
-		return err
-	}
-	record := resourceRecord{UID: config.UID, Kind: "forward", Name: f.Name, Host: f.Host, Direction: f.direction()}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	task, err := tasks.registerResource(record, cancel)
-	if err != nil {
-		return err
-	}
-	s := &resourceService{record: task.record, auth: config.Auth, log: tasks.log, environment: request.Env, directory: request.Record.Directory}
-	ack := awaitResourceCommit(func(v any) error { return json.UnmarshalDecode(dec, v) }, cancel)
-	err = runForward(ctx, f, s, func() error {
-		record := tasks.resourceReady(task, s.record.Detail, "", "")
-		if err := offerResourceStartup(enc, record, ack, nil); err != nil {
-			return err
-		}
-		acknowledgeResourceStartup(enc, c)
-		return nil
-	})
-	tasks.finishResource(task)
-	return err
 }

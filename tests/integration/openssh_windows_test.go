@@ -192,12 +192,21 @@ func testWindowsForward(t *testing.T, command func(...string) *exec.Cmd, host st
 	address := reserved.Addr().String()
 	servicePort := service.Addr().(*net.TCPAddr).Port
 	forwardPort := reserved.Addr().(*net.TCPAddr).Port
-	_ = reserved.Close()
 	source, target := fmt.Sprintf("%s:%d", host, servicePort), fmt.Sprintf("here:%d", forwardPort)
 	if reverse {
 		source, target = fmt.Sprintf("here:%d", servicePort), fmt.Sprintf("%s:%d", host, forwardPort)
 	}
-	out := windowsRun(t, command(append([]string{"forward", source, target, "--ssh"}, sshOptions...)...))
+	args := append([]string{"forward", source, target, "--ssh"}, sshOptions...)
+	if !reverse {
+		// A failed worker startup must release its registration. The same
+		// endpoint can be started immediately after its blocker is removed.
+		if out, err := command(args...).CombinedOutput(); err == nil || strings.Contains(string(out), "Started forward/") {
+			reserved.Close()
+			t.Fatalf("forward worker accepted an occupied port: %v\n%s", err, out)
+		}
+	}
+	_ = reserved.Close()
+	out := windowsRun(t, command(args...))
 	_, task, found := strings.Cut(string(out), "Started forward/")
 	task, _, _ = strings.Cut(task, ":")
 	if !found || task == "" {

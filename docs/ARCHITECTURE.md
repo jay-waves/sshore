@@ -150,18 +150,18 @@ Normal connections require the exact full release version. Validate
 [process identity](../internal/sys/process_identity_linux.go) before signaling.
 A remote shell's mount
 or forward approval is bound to the original task and its requested operation.
-The daemon opens fresh SSH
-connections through the authenticated route at startup. The resource owns those
+Each worker opens fresh SSH connections through the authenticated route at startup and owns those
 connections after startup, so exiting a source or ancestor shell leaves the
 resource running. Mount and forward configuration travels in the authenticated
 launch request.
 Each TCP connection or UDP sender gets a stream in the forward rule's smux session.
-The [ports package](../internal/ports) owns endpoint discovery, listeners, target
-dials and worker shutdown. The application supplies the authenticated transport
-and the startup exchange for the approved rule.
+The [ports package](../internal/ports) owns endpoint discovery, listeners, target dials and shutdown.
 The daemon task registry publishes mount and forward state at registration, readiness and exit.
-The caller commits startup on the launch stream. After it closes, the daemon can still stop
-a forward by cancelling its context or unmount through the mount worker's control pipe.
+Both resources use the same [startup handoff](../cmd/sshore/resources.go). If the launch stream
+closes before commit, startup is cancelled. Once committed, the daemon owns the task even if the
+caller loses the reply. The daemon closes the forward worker's control pipe to stop it and
+requests graceful unmount through the mount worker's control pipe. Both workers share the
+same process supervisor.
 Copy and mount use `pkg/sftp/v2` with embedded agents. Directory notifications use their own stream.
 The [files package](../internal/files/mount_paths.go) prepares local mountpoints.
 Windows drive-letter mounts use unique WinFsp UNC paths for handle-based path resolution.

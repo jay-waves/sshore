@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json/jsontext"
@@ -9,9 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -19,7 +16,6 @@ import (
 	"github.com/jay-waves/sshore/internal/files/dirlist"
 	"github.com/jay-waves/sshore/internal/release"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
-	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 	bolt "go.etcd.io/bbolt"
 )
@@ -195,177 +191,7 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle files.MountLifecycl
 	return files.RunMount(c, lifecycle)
 }
 
-func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "daemon", "mount")
-	sys.DetachWorker(cmd)
-	cmd.Dir = request.Record.Directory
-	cmd.Env = request.Env
-	cmd.Stderr = log
-	input, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-	defer input.Close()
-	// Keep the read end independent of Cmd.Wait so a control request can
-	// consume the worker's final reply after it exits.
-	output, childOutput, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-	defer output.Close()
-	defer childOutput.Close()
-	cmd.Stdout = childOutput
-	childInput := jsontext.NewEncoder(input)
-	child := jsontext.NewDecoder(output)
-	owner, releaseWorker := context.WithCancel(context.Background())
-	defer releaseWorker()
-	// Claim the task name before the worker can prepare its mountpoint.
-	record := resourceRecord{Kind: "mount", UID: config.UID, Name: config.Mount.Name, Host: config.Mount.Host, ReadOnly: config.Mount.ReadOnly, Direction: "<-"}
-	task, err := tasks.registerResource(record, releaseWorker)
-	if err != nil {
-		return err
-	}
-	config.Mount.Name = task.taskName()
-	if err = cmd.Start(); err != nil {
-		tasks.finishResource(task)
-		return err
-	}
-	childOutput.Close()
-	go func() {
-		_ = cmd.Wait()
-		tasks.finishResource(task)
-	}()
-	killWorker := func() {
-		_ = cmd.Process.Kill()
-		_ = input.Close()
-		_ = output.Close()
-	}
-	context.AfterFunc(owner, func() {
-		input.Close()
-		timer := time.NewTimer(resourceStopTimeout)
-		defer timer.Stop()
-		select {
-		case <-task.done:
-		case <-timer.C:
-			killWorker()
-		}
-	})
-	defer func() {
-		releaseWorker()
-		<-task.done
-		// The worker has exited. Let any control call consume its final reply
-		// before closing the read end.
-		task.stopMu.Lock()
-		output.Close()
-		task.stopMu.Unlock()
-	}()
-	// Watch the initiator before writing to the worker, so cancellation also
-	// interrupts a blocked configuration write.
-	commit := make(chan error, 1)
-	configured := make(chan struct{})
-	go func() {
-		read := func(value any) error { return json.UnmarshalDecode(dec, value) }
-		if config.Mount.PickRemote || config.Mount.PickMountpoint {
-			err := readMountSelection(read, func(request mountPathRequest) error {
-				<-configured
-				return json.MarshalEncode(childInput, request)
-			})
-			if err != nil {
-				releaseWorker()
-				commit <- err
-				return
-			}
-		}
-		commit <- readResourceCommit(read, releaseWorker)
-	}()
-	defer func() { _ = c.SetReadDeadline(time.Now()) }()
-	if err = json.MarshalEncode(childInput, config); err != nil {
-		close(configured)
-		return err
-	}
-	close(configured)
-	var startup resourceStartup
-	for {
-		startup = resourceStartup{}
-		if err = json.UnmarshalDecode(child, &startup); err != nil {
-			return err
-		}
-		if !startup.Browse && startup.Listing == nil {
-			break
-		}
-		if err = json.MarshalEncode(enc, startup); err != nil {
-			return err
-		}
-	}
-	if startup.Error != "" {
-		return json.MarshalEncode(enc, startup)
-	}
-	record = tasks.resourceReady(task, startup.Detail, startup.Remote, startup.Mountpoint)
-	if err = offerResourceStartup(enc, record, commit, task.done); err != nil {
-		return err
-	}
-	// The CLI has committed. Task control now owns the worker pipes.
-	task.stopMu.Lock()
-	if owner.Err() != nil || task.expired() {
-		task.stopMu.Unlock()
-		return fmt.Errorf("mount stopped during startup")
-	}
-	task.stop = func() error {
-		// A hung worker cannot keep daemon task control blocked on its pipe.
-		timer := time.AfterFunc(resourceStopTimeout, killWorker)
-		defer timer.Stop()
-		if err := json.MarshalEncode(childInput, "kill"); err != nil {
-			return err
-		}
-		var reply resourceReply
-		if err := json.UnmarshalDecode(child, &reply); err != nil {
-			return fmt.Errorf("mount worker stopped without an unmount result: %w", err)
-		}
-		if reply.Error != "" {
-			return errors.New(reply.Error)
-		}
-		releaseWorker()
-		return nil
-	}
-	task.stopMu.Unlock()
-	acknowledgeResourceStartup(enc, c)
-	<-task.done
-	return nil
-}
-
-func runMountDaemon() (code int, resultErr error) {
-	enc := jsontext.NewEncoder(os.Stdout)
-	reportedReady := false
-	defer func() {
-		if !reportedReady && resultErr != nil {
-			_ = json.MarshalEncode(enc, resourceStartup{Error: cleanText(resultErr.Error())})
-		}
-	}()
-
-	// The daemon encodes one JSON record per line. Bound each record so a
-	// long-lived control stream never exhausts a cumulative input budget.
-	input := bufio.NewScanner(os.Stdin)
-	input.Buffer(nil, 1<<20)
-	read := func(value any) error {
-		if input.Scan() {
-			return json.Unmarshal(input.Bytes(), value)
-		}
-		if err := input.Err(); err != nil {
-			return err
-		}
-		return io.EOF
-	}
-	var config resourceConfig
-	if e := read(&config); e != nil {
-		return 1, e
-	}
-	if config.kind() != "mount" || !validTaskUID(config.UID) {
-		return 1, fmt.Errorf("mount worker requires a registered mount configuration")
-	}
+func runMountWorker(config resourceConfig, read func(any) error, enc *jsontext.Encoder, publish func(resourceRecord) error) (int, error) {
 	o := *config.Mount
 	if err := validSession(o.Name); err != nil {
 		return 1, err
@@ -415,11 +241,7 @@ func runMountDaemon() (code int, resultErr error) {
 	}()
 	ready := func(root, mountpoint string) error {
 		s.record.Remote, s.record.Mountpoint = root, mountpoint
-		if err := json.MarshalEncode(enc, s.record); err != nil {
-			return err
-		}
-		reportedReady = true
-		return nil
+		return publish(s.record)
 	}
 	lifecycle := files.MountLifecycle{OwnerDone: ownerDone, Ready: ready, Stop: unmount}
 	selector := func(ctx context.Context, readDir files.DirectoryReader, home string) (string, string, error) {

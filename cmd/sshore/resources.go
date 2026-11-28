@@ -25,8 +25,7 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
-// The account daemon owns resource identity and control. Mounts isolate native
-// filesystem code in a child connected by pipes; forwards run in the daemon.
+// The account daemon owns resource identity and controls each worker over pipes.
 type resourceRecord struct {
 	UID                                          string `json:",omitempty"`
 	Kind, Detail, Name, Host, Remote, Mountpoint string
@@ -332,8 +331,7 @@ func printDaemonSnapshot(w *os.File, host string, snapshot daemonSnapshot) {
 	termui.WriteTable(w, table, 0, -1, termui.ColorEnabled(w))
 }
 
-// Mount daemons receive only startup/control messages through the account daemon.
-// Forwards run here and directly own their SSH child; payloads stay in SSH.
+// Resource workers receive startup and control messages through the account daemon.
 func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTasks) (result error) {
 	enc := jsontext.NewEncoder(c)
 	defer func() {
@@ -347,55 +345,92 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	if !validTaskUID(config.UID) {
 		return fmt.Errorf("invalid resource task ID")
 	}
+	record := resourceRecord{UID: config.UID, Kind: kind}
+	switch kind {
+	case "forward":
+		f := config.Forward
+		record.Name, record.Host, record.Direction = f.Name, f.Host, f.direction()
+	case "mount":
+		m := config.Mount
+		record.Name, record.Host, record.ReadOnly, record.Direction = m.Name, m.Host, m.ReadOnly, "<-"
+	default:
+		return errors.New("invalid resource configuration")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	task, err := tasks.registerResource(record, cancel)
+	if err != nil {
+		return err
+	}
+	defer tasks.finishResource(task)
 	dec := jsontext.NewDecoder(io.LimitReader(c, daemonBodyLimit))
-	if kind == "forward" {
-		return runDaemonForward(config, enc, dec, c, request, tasks)
+	defer func() { _ = c.SetReadDeadline(time.Now()) }()
+	ready := func(owner context.Context, record resourceRecord, ack <-chan error, stop func() error) error {
+		return tasks.handoffResource(owner, c, enc, task, record, ack, stop)
+	}
+	if config.Mount != nil {
+		mount := *config.Mount
+		mount.Name = task.taskName()
+		config.Mount = &mount
+	} else {
+		forward := *config.Forward
+		forward.Name = task.taskName()
+		config.Forward = &forward
 	}
 	log := termui.NewLogWriter(tasks.log, canonicalTaskCode(taskKey(config.UID)), termui.Error)
 	defer log.Flush()
-	return runDaemonMount(config, enc, dec, c, log, request, tasks)
-}
-
-func acknowledgeResourceStartup(enc *jsontext.Encoder, c net.Conn) {
-	// The daemon owns the committed task even if the initiator loses its reply.
-	_ = json.MarshalEncode(enc, resourceCommitReply{Started: true})
-	_ = c.Close()
+	return runResourceWorker(ctx, config, enc, dec, log, request, ready)
 }
 
 func awaitResourceCommit(read func(any) error, abandon func()) <-chan error {
 	ack := make(chan error, 1)
 	go func() {
-		ack <- readResourceCommit(read, abandon)
+		var answer string
+		err := read(&answer)
+		if err == nil && answer != "commit" {
+			err = fmt.Errorf("invalid startup acknowledgement")
+		}
+		if err != nil {
+			abandon()
+		}
+		ack <- err
 	}()
 	return ack
 }
 
-func readResourceCommit(read func(any) error, abandon func()) error {
-	var answer string
-	err := read(&answer)
-	if err == nil && answer != "commit" {
-		err = fmt.Errorf("invalid startup acknowledgement")
-	}
-	if err != nil {
-		abandon()
-	}
-	return err
-}
-
-func offerResourceStartup(enc *jsontext.Encoder, startup resourceRecord, ack <-chan error, finished <-chan struct{}) error {
-	if err := json.MarshalEncode(enc, startup); err != nil {
+func (s *daemonTasks) handoffResource(ctx context.Context, c net.Conn, enc *jsontext.Encoder, task *daemonResourceTask, ready resourceRecord, ack <-chan error, stop func() error) error {
+	task.mu.Lock()
+	task.record.Detail, task.record.Remote, task.record.Mountpoint = ready.Detail, ready.Remote, ready.Mountpoint
+	record := task.record
+	task.mu.Unlock()
+	s.inventoryChanged(record.UID)
+	if err := json.MarshalEncode(enc, record); err != nil {
 		return err
 	}
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()
 	select {
 	case err := <-ack:
-		return err
-	case <-finished:
-		return fmt.Errorf("resource worker exited before startup acknowledgement")
+		if err != nil {
+			return err
+		}
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-timer.C:
 		return fmt.Errorf("resource startup acknowledgement timed out")
 	}
+	task.stopMu.Lock()
+	if ctx.Err() != nil {
+		task.stopMu.Unlock()
+		return fmt.Errorf("resource stopped during startup")
+	}
+	task.stop = stop
+	task.stopMu.Unlock()
+
+	// The daemon owns the committed task even if the initiator loses its reply.
+	_ = json.MarshalEncode(enc, resourceCommitReply{Started: true})
+	_ = c.Close()
+	return nil
 }
 
 type resourceCommitReply struct {

@@ -11,6 +11,7 @@
   through the existing SFTP client before mounting.
 - Mounts run in the background. The CLI owns the picker, the account daemon owns
   the task, and one isolated worker owns the SSH connection and native mount.
+  The daemon relays picker messages between the CLI and worker.
   The credential broker handles SSH prompts. The worker reports readiness and
   the CLI commits startup with the daemon. Losing the CLI before commit cancels
   startup, including during authentication or browsing.

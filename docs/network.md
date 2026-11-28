@@ -64,6 +64,10 @@ and public-key fingerprints, authentication results, and negotiated key exchange
 ciphers and integrity algorithms. `--ssh -v` and SSH `LogLevel DEBUG` enable the same output.
 For example, `sshore sh work -v` traces a shell connection.
 
+Copy runs in the foreground. In a shell with job control, append `&` to run a
+non-interactive copy in the background. Use explicit paths and SSH credentials
+that require no prompt.
+
 Direct copies use the current directory for an empty local path and the remote home for an
 empty SSH path. Copy transfers show byte progress on stderr. Stdin uploads show the bytes read
 so far. Use `--lf` to browse omitted paths in the three-column picker.

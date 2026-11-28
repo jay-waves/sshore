@@ -76,10 +76,10 @@ func runDaemonCommand(parsed cliArguments) (int, error) {
 	switch parsed.operand(0) {
 	case "":
 		return 0, runDaemon()
-	case "mount":
-		return runMountDaemon()
+	case "mount", "forward":
+		return runResourceWorkerCommand(parsed.operand(0))
 	default:
-		return 2, usage("usage: sshore daemon [mount]")
+		return 2, usage("usage: sshore daemon [mount|forward]")
 	}
 }
 

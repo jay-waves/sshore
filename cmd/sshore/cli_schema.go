@@ -836,12 +836,12 @@ Forward a remote UDP DNS service to local port 1053
 		"daemon": {
 			run: runDaemonCommand, group: groupAccount, summary: "Run the account daemon",
 			max: 1,
-			help: `Usage: sshore daemon [mount]
+			help: `Usage: sshore daemon [mount|forward]
 
 Run the account daemon in the foreground. Clients start it automatically when needed.
 The daemon owns shells and coordinates mounts and forwards.
 It exits after 30 seconds without tasks or connections.
-The mount subcommand runs an isolated mount worker, started by the daemon.
+The mount and forward subcommands run isolated workers started by the daemon.
 `,
 		},
 	}

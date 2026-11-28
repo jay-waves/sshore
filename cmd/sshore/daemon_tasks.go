@@ -236,8 +236,7 @@ type resourceReply struct {
 	Failures []string `json:",omitempty"`
 }
 
-// A mount owns a child process; a forward owns an in-process executor. Both
-// expose the same bounded control operations through the account task table.
+// Mount and forward workers share the account task table and bounded stop operation.
 type daemonResourceTask struct {
 	mu     sync.Mutex
 	record resourceRecord // Only Detail, Remote and Mountpoint change after registration.
@@ -333,16 +332,6 @@ func (s *daemonTasks) finishResource(t *daemonResourceTask) {
 	t.mu.Unlock()
 	s.mu.Unlock()
 	s.inventoryChanged(t.record.UID)
-}
-
-// Startup supplies runtime details. The task table owns identity and naming.
-func (s *daemonTasks) resourceReady(t *daemonResourceTask, detail, root, mountpoint string) resourceRecord {
-	t.mu.Lock()
-	t.record.Detail, t.record.Remote, t.record.Mountpoint = detail, root, mountpoint
-	record := t.record
-	t.mu.Unlock()
-	s.inventoryChanged(t.record.UID)
-	return record
 }
 
 func (s *daemonTasks) serveTaskStop(w http.ResponseWriter, r *http.Request) {
