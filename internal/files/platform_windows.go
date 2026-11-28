@@ -3,16 +3,19 @@
 package files
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf16"
 
 	"github.com/winfsp/go-winfsp"
 	"github.com/winfsp/go-winfsp/gofs"
@@ -76,12 +79,14 @@ func mountFTP(f *ftpFS, p string, automatic bool) (ftpMount, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("create Windows mount permissions: %w", err)
 	}
-	if isDriveLetter(p) {
-		// Windows can resolve final paths on WinFsp network drives.
-		opts = append(opts, winfsp.VolumePrefix(`\sshore\`+rand.Text()))
-	}
 	if f.readOnly {
 		opts = append(opts, winfsp.Attributes(winfsp.FspFSAttributeReadOnlyVolume))
+	}
+	name, number := "", 1
+	if isDriveLetter(p) {
+		// Windows can resolve final paths on WinFsp network drives.
+		name = windowsMountShareName(f.root)
+		opts = append(opts, winfsp.VolumePrefix(`\sshore\`+name))
 	}
 	pool := &ftpWindowsMetadataPool{backend: f, entries: make(map[string]*ftpWindowsMetadataEntry)}
 	behaviour := gofs.New(&ftpWindowsFS{backend: f, pool: pool}).(ftpWindowsBehaviour)
@@ -91,6 +96,11 @@ func mountFTP(f *ftpFS, p string, automatic bool) (ftpMount, string, error) {
 		host, err := winfsp.Mount(adapter, p, opts...)
 		if err == nil {
 			return &ftpWindowsMount{fs: host, done: make(chan struct{}), cleanup: pool.close}, p, nil
+		}
+		if errors.Is(err, winfsp.ErrVolumePrefixInUse) {
+			number++
+			opts[len(opts)-1] = winfsp.VolumePrefix(`\sshore\` + name + "-" + strconv.Itoa(number))
+			continue
 		}
 		if !automatic || !errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
 			pool.close()
@@ -104,6 +114,30 @@ func mountFTP(f *ftpFS, p string, automatic bool) (ftpMount, string, error) {
 			return nil, "", err
 		}
 	}
+}
+
+func windowsMountShareName(root string) string {
+	name := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || strings.ContainsRune(`"\/[]:|<>+=;,*?`, r) {
+			return '-'
+		}
+		// WinFsp resolves UNC paths case-insensitively.
+		return unicode.ToLower(unicode.ToUpper(r))
+	}, path.Base(root))
+	// Leave room for the numeric suffix in the 80-code-unit share name.
+	remaining := 60
+	for i, r := range name {
+		remaining -= utf16.RuneLen(r)
+		if remaining < 0 {
+			name = name[:i]
+			break
+		}
+	}
+	name = strings.Trim(name, " .-")
+	if name == "" {
+		return "root"
+	}
+	return name
 }
 
 type ftpWindowsFS struct {

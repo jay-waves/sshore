@@ -84,3 +84,23 @@
  	_, _ = deleteDirectoryBuffer.Call(
  		uintptr(unsafe.Pointer(&buf.ptr)))
  }
+@@ -1508,6 +1512,9 @@
+ 	registerProc("FspFileSystemSetDebugLogF", &setDebugLogF)
+ }
+ 
++// ErrVolumePrefixInUse reports a collision while registering a UNC prefix.
++var ErrVolumePrefixInUse = errors.New("volume prefix is already in use")
++
+ // Mount attempts to mount a file system to specified mount
+ // point, returning the handle to the real filesystem.
+ func Mount(
+@@ -1728,6 +1735,9 @@
+ 	runtime.KeepAlive(volumeParams)
+ 	runtime.KeepAlive(fileSystemOps)
+ 	if err != nil {
++		if option.volumePrefix != "" && errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
++			return nil, ErrVolumePrefixInUse
++		}
+ 		return nil, errors.Wrap(err, "create file system")
+ 	}
+ 	defer func() {

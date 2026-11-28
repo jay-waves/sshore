@@ -22,11 +22,16 @@ func TestWindowsMount(t *testing.T) {
 		t.Skipf("requires WinFsp: %v", err)
 	}
 
-	t.Run("concurrent automatic mounts expose separate canonical paths and release their drives", func(t *testing.T) {
+	t.Run("concurrent mounts of the same directory get numbered shares and release their drives", func(t *testing.T) {
 		source := t.TempDir()
+		const directory = "项目 Files"
+		root := filepath.Join(source, "parent", directory)
+		if err := os.MkdirAll(root, 0700); err != nil {
+			t.Fatal(err)
+		}
 		const name = "文档 with spaces.md"
 		const original = "# Mounted document\n"
-		if err := os.WriteFile(filepath.Join(source, name), []byte(original), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(original), 0600); err != nil {
 			t.Fatal(err)
 		}
 		connecting := make(chan struct{}, 2)
@@ -41,8 +46,8 @@ func TestWindowsMount(t *testing.T) {
 				return ctx.Err()
 			}
 		}
-		readOnly := startWindowsMount(t, source, "", true, barrier)
-		writable := startWindowsMount(t, source, "", false, barrier)
+		readOnly := startWindowsMount(t, source, "~/parent/"+directory, "", true, barrier)
+		writable := startWindowsMount(t, source, "~/parent/"+directory, "", false, barrier)
 		for range 2 {
 			select {
 			case <-connecting:
@@ -55,6 +60,13 @@ func TestWindowsMount(t *testing.T) {
 		readonlyFile := filepath.Join(first+`\`, name)
 		writableFile := filepath.Join(second+`\`, name)
 		firstUNC, secondUNC := finalWindowsMountPath(t, readonlyFile), finalWindowsMountPath(t, writableFile)
+		firstShare, secondShare := filepath.VolumeName(firstUNC), filepath.VolumeName(secondUNC)
+		if firstShare > secondShare {
+			firstShare, secondShare = secondShare, firstShare
+		}
+		if base := `\\?\UNC\sshore\项目 files`; !strings.EqualFold(firstShare, base) || !strings.EqualFold(secondShare, base+"-2") {
+			t.Fatalf("expected the directory name and its numbered share, got %q and %q", firstShare, secondShare)
+		}
 		if strings.EqualFold(first, second) || strings.EqualFold(firstUNC, secondUNC) {
 			t.Fatalf("mounts shared a drive or UNC path: %s and %s", first, second)
 		}
@@ -87,7 +99,7 @@ func TestWindowsMount(t *testing.T) {
 		if err := os.WriteFile(out, []byte(added), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if data, err := os.ReadFile(filepath.Join(source, "new.md")); err != nil || string(data) != added {
+		if data, err := os.ReadFile(filepath.Join(root, "new.md")); err != nil || string(data) != added {
 			t.Fatalf("write through canonical path: %q (%v)", data, err)
 		}
 		readOnly.stop()
@@ -106,7 +118,7 @@ func TestWindowsMount(t *testing.T) {
 			t.Fatal(err)
 		}
 		point := filepath.Join(t.TempDir(), "mounted")
-		mount := startWindowsMount(t, source, point, true, nil)
+		mount := startWindowsMount(t, source, "~", point, true, nil)
 		if data, err := os.ReadFile(filepath.Join(mount.point(t), name)); err != nil || string(data) != "directory mount" {
 			t.Fatalf("read through directory mount: %q (%v)", data, err)
 		}
@@ -124,7 +136,7 @@ type windowsMountFixture struct {
 	stop  func()
 }
 
-func startWindowsMount(t *testing.T, source, point string, readOnly bool, barrier func(context.Context) error) *windowsMountFixture {
+func startWindowsMount(t *testing.T, source, remote, point string, readOnly bool, barrier func(context.Context) error) *windowsMountFixture {
 	t.Helper()
 	const version = "0.0.0"
 	owner, done := make(chan struct{}), make(chan struct{})
@@ -145,7 +157,7 @@ func startWindowsMount(t *testing.T, source, point string, readOnly bool, barrie
 	go func() {
 		defer close(done)
 		_, mount.err = files.RunMount(files.MountConfig{
-			Mountpoint: point, Remote: "~", Version: version, Name: "windows-mount",
+			Mountpoint: point, Remote: remote, Version: version, Name: "windows-mount",
 			ReadOnly: readOnly, StartupTimeout: 10 * time.Second, IOTimeout: 5 * time.Second,
 			Open: func(ctx context.Context) (io.ReadWriteCloser, error) {
 				if barrier != nil {
@@ -193,9 +205,5 @@ func finalWindowsMountPath(t *testing.T, name string) string {
 	if err != nil || n >= uint32(len(buffer)) {
 		t.Fatalf("resolve final path of %s: length %d, error %v", name, n, err)
 	}
-	path := windows.UTF16ToString(buffer[:n])
-	if !strings.HasPrefix(strings.ToLower(path), `\\?\unc\sshore\`) {
-		t.Fatalf("expected a WinFsp UNC path, got %q", path)
-	}
-	return path
+	return windows.UTF16ToString(buffer[:n])
 }
