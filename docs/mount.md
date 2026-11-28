@@ -49,6 +49,50 @@ See [cache keys and budgets](../internal/files/mount_metadata_cache.go),
 [prefetch and refresh](../internal/files/mount_refresh.go) and
 [SFTP response limits](../internal/files/sftp.go).
 
+## Request scheduling during bulk transfers
+
+Directory browsing and small file reads share the SFTP data stream with bulk transfers.
+
+Each mount reserves eight outstanding requests for metadata operations and reads
+of up to 4 KiB. Larger reads and writes share a separate 16-request window.
+When both queues have a free slot and a request ready, the sender alternates
+between them. Requests in each queue are sent in arrival order. A bulk transfer
+may occupy its entire window while directory and attribute queries still have
+room to send. Sustained browsing also leaves send opportunities for bulk I/O.
+
+The scheduler bounds how many bulk requests can get ahead on the data stream.
+Already-sent packets can still delay a response. A large directory listing,
+network stalls, and slow remote storage can also affect response times. The 4 KiB
+cutoff applies to the SFTP read request size. A filesystem may request more bytes
+than the application reads.
+
+By default, a request waiting for a send slot can time out after 60 seconds. A
+request that times out in this queue is removed before dispatch. Once dispatch
+reaches the SFTP transport, the request has its own timeout. A transport timeout
+closes the mount connection, and writes are never replayed. See
+[`sshore mount --help`](../cmd/sshore/cli_schema.go) for timeout settings and
+[SFTP mount safeguards](SECURITY.md#sftp-mounts) for failure semantics.
+
+## Benchmark
+
+Run on Windows or Linux with the repository's Go toolchain:
+
+```sh
+go run ./scripts go test ./internal/files -run '^$' -bench '^BenchmarkMountResponsiveness$' -benchtime=20x
+```
+
+The benchmark uses the real SFTP client and agent on a local TCP connection.
+Thirty-two workers issue 128 KiB reads while the foreground lists a directory
+or opens and reads a short file. The test paces each 64 KiB data reply by 2 ms
+to keep the shared stream busy. Both modes use the same fixture. The shared
+window provides the unscheduled baseline and the reserved windows use the
+mount scheduler. The output reports foreground P95 latency in milliseconds
+and concurrent bulk throughput in MiB/s.
+
+Use these figures to compare changes under the same load. End-to-end
+filesystem and SSH performance also depends on the platform, caching, network,
+server, and workload.
+
 ## Change notification and teardown
 
 - The remote agent watches requested directories on the notification stream and
@@ -58,7 +102,7 @@ See [cache keys and budgets](../internal/files/mount_metadata_cache.go),
 - Local mutations invalidate affected paths and parent listings. A rename
   includes both endpoints. Aliases and existing open snapshots can retain
   older observations. A notification remains advisory and grants no authority.
-- When enabled, the I/O timeout applies per SFTP request. A timeout closes the transport.
+- An in-flight SFTP request timeout closes the transport.
   The optional startup timeout covers authentication, selection and native mount creation.
   The remote result of a timed-out write can be unknown, so writes are never
   replayed. Graceful unmount attempts to release the filesystem while the

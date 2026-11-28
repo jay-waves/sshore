@@ -212,7 +212,7 @@ func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error)
 		})
 	}
 	// The same limit covers directory replies on every client and 128 KiB FUSE reads in two requests.
-	client, err = sftp.NewClientPipe(ctx, ftp, ftp, sftp.WithMaxDataLength(mountSFTPDataLength))
+	client, err = newMountSFTPClient(ctx, ftp, o.IOTimeout)
 	if err != nil {
 		if cause := context.Cause(ctx); cause != nil {
 			return 1, cause

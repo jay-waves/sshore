@@ -1,6 +1,92 @@
 --- a/client.go
 +++ b/client.go
-@@ -885,3 +885,13 @@
+@@ -44,6 +44,8 @@
+ 	inflight map[uint32]chan<- result
+ 	wr       io.WriteCloser
+ 	err      error
++	admit    func(closed, cancel <-chan struct{}, req sshfx.PacketMarshaller) (sent, release func(), err error)
++	releases map[uint32]func()
+ }
+ 
+ func (c *clientConn) handshake(ctx context.Context, maxPacket uint32) (map[string]string, error) {
+@@ -101,6 +103,10 @@
+ 
+ 	ch, loaded := c.inflight[reqid]
+ 	delete(c.inflight, reqid)
++	if release := c.releases[reqid]; release != nil {
++		delete(c.releases, reqid)
++		release()
++	}
+ 
+ 	return ch, loaded
+ }
+@@ -154,6 +160,10 @@
+ 		err: sshfx.StatusConnectionLost,
+ 	}
+ 
++	for id, release := range c.releases {
++		release()
++		delete(c.releases, id)
++	}
+ 	for reqid, ch := range c.inflight {
+ 		ch <- bcastRes
+ 
+@@ -205,6 +215,20 @@
+ // then dispatch will return an [fs.ErrClosed] error.
+ func (c *clientConn) dispatch(cancel <-chan struct{}, req sshfx.PacketMarshaller) (uint32, chan result, error) {
+ 	reqid := c.reqid.Add(1)
++	var release func()
++	if c.admit != nil {
++		sent, done, err := c.admit(c.closed, cancel, req)
++		if err != nil {
++			return reqid, nil, err
++		}
++		release = done
++		defer sent()
++		defer func() {
++			if release != nil {
++				release()
++			}
++		}()
++	}
+ 
+ 	header, payload, err := req.MarshalPacket(reqid, c.bufPool.Get())
+ 	if err != nil {
+@@ -253,6 +277,10 @@
+ 		c.inflight = make(map[uint32]chan<- result)
+ 	}
+ 	c.inflight[reqid] = ch
++	if release != nil {
++		c.releases[reqid] = release
++		release = nil
++	}
+ 
+ 	return reqid, ch, nil
+ }
+@@ -329,6 +357,17 @@
+ 
+ // ClientOption specifies an optional that can be set on a client.
+ type ClientOption func(*Client) error
++
++// WithDispatchAdmission runs before a request takes a result slot or the send lock.
++// On admission, sent releases the writer reservation and release frees the request
++// reservation on reply, send failure, or disconnect.
++func WithDispatchAdmission(admit func(closed, cancel <-chan struct{}, req sshfx.PacketMarshaller) (sent, release func(), err error)) ClientOption {
++	return func(cl *Client) error {
++		cl.conn.admit = admit
++		cl.conn.releases = make(map[uint32]func())
++		return nil
++	}
++}
+ 
+ // WithMaxInflight sets the maximum number of inflight packets at one time.
+ //
+@@ -880,6 +919,16 @@
+ 	}
+ 
+ 	return nil
++}
++
 +// RemoveFile removes a file by sending SSH_FXP_REMOVE.
 +func (cl *Client) RemoveFile(name string) error {
 +	return wrapPathError("remove", name, cl.sendPacket(context.Background(), nil, &sshfx.RemovePacket{Path: name}))
@@ -9,11 +95,9 @@
 +// RemoveDirectory removes an empty directory by sending SSH_FXP_RMDIR.
 +func (cl *Client) RemoveDirectory(name string) error {
 +	return wrapPathError("rmdir", name, cl.sendPacket(context.Background(), nil, &sshfx.RmdirPacket{Path: name}))
-+}
-+
+ }
+ 
  // Remove removes the named file or (empty) directory.
- //
- // If both operations fail, then Remove will stat the named filesystem object.
 --- a/server.go
 +++ b/server.go
 @@ -231,10 +231,6 @@

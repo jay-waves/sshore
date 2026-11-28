@@ -770,7 +770,7 @@ free drive letter or nonexistent directory on Windows.
 
 Options:
   --read-only                  Reject changes through the mount
-  --io-timeout DURATION        Per SFTP request, including handshake (60s; 0s disables)
+  --io-timeout DURATION        SFTP queue, request and handshake timeouts (60s; 0s disables)
   --startup-timeout DURATION   Startup including authentication (0s disables)
   --stats                      Report request and cache statistics
   --direct-io                  Disable kernel read caching (Linux)
@@ -779,7 +779,7 @@ From an attached remote shell, ..: selects the attached client.
 Use .: as the source with --lf to browse on the host.
 Approve the request on the attached client and choose a mountpoint.
 If the filesystem reports a busy mount, close files and retry sshore kill TASK.
-Request timeouts close the whole mount connection;
+In-flight request timeouts close the whole mount connection;
 affected writes are not retried.
 
 Example: sshore mount work:/srv/project .: --read-only

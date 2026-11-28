@@ -277,7 +277,8 @@ OpenSSH subsystem flags apply only to the SSH subsystem. The mount connection
 disables native forwarding, backgrounding and ControlMaster sharing.
 
 Outstanding SFTP requests have individual deadlines that other responses or
-keepalives cannot extend. Timeout aborts the connection; **a write may already have
+keepalives cannot extend. A request that times out waiting for a send slot is
+discarded. An in-flight timeout aborts the connection. **A write may already have
 completed remotely**. No write is replayed. There is no persistent write-back spool,
 conflict detection, local-disk locking or atomic multi-operation transaction.
 A server response is not proof that a compromised server stored data.
