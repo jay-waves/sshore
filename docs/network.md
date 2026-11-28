@@ -29,6 +29,8 @@ SSH configuration and credentials. The outer session stays attached throughout.
 [`internal/ssh`](../internal/ssh/) owns the authenticated `Client` and its SSH
 channels. A `Process` represents an exec channel and exposes input half-close,
 output and exit status.
+The daemon and mount protocols share bounded control framing before handing
+the same byte stream to their application protocol.
 
 [`StreamMux`](../internal/ssh/stream_mux.go) opens and accepts reliable child
 streams over one existing carrier. smux is its implementation. Forwarding

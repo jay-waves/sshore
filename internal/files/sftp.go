@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/ssh"
 	sftp "github.com/pkg/sftp/v2"
 )
 
@@ -146,10 +147,10 @@ func (w *ftpWire) WriteSFTPPacket(header, payload []byte) error {
 	if err := w.record(header[4:], size); err != nil {
 		return err
 	}
-	if err := writeFull(w.writer, header); err != nil {
+	if err := ssh.WriteFull(w.writer, header); err != nil {
 		return err
 	}
-	return writeFull(w.writer, payload)
+	return ssh.WriteFull(w.writer, payload)
 }
 
 func ftpDirectoryFailure(id uint32) []byte {
@@ -263,20 +264,6 @@ func (w *ftpWire) watchRequests(ctx context.Context, timeout time.Duration) erro
 			timer.Stop()
 		case <-deadline:
 		}
-	}
-	return nil
-}
-
-func writeFull(w io.Writer, data []byte) error {
-	for len(data) > 0 {
-		n, err := w.Write(data)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		data = data[n:]
 	}
 	return nil
 }

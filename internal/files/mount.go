@@ -401,40 +401,16 @@ func writeMessage(w io.Writer, m message) error {
 	if err != nil {
 		return err
 	}
-	if len(body) > maxMountMessage {
-		return fmt.Errorf("mount message exceeds %d bytes", maxMountMessage)
-	}
-	return writeFull(w, append(body, '\n'))
+	return ssh.WriteControlFrame(w, body, maxMountMessage)
 }
 
 func readMessage(r *mountStream) (message, error) {
-	var body []byte
-	for {
-		part, err := r.reader.ReadSlice('\n')
-		if err == nil {
-			part = part[:len(part)-1]
-		}
-		if len(part) > maxMountMessage-len(body) {
-			return message{}, fmt.Errorf("mount message exceeds %d bytes", maxMountMessage)
-		}
-		if err == nil {
-			if body == nil {
-				body = part
-			} else {
-				body = append(body, part...)
-			}
-			break
-		}
-		if err != bufio.ErrBufferFull {
-			if err == io.EOF && len(body)+len(part) != 0 {
-				err = io.ErrUnexpectedEOF
-			}
-			return message{}, err
-		}
-		body = append(body, part...)
+	body, err := ssh.ReadControlFrame(r.reader, maxMountMessage)
+	if err != nil {
+		return message{}, err
 	}
 	var m message
-	err := json.Unmarshal(body, &m)
+	err = json.Unmarshal(body, &m)
 	if err == nil && m.Type == "" {
 		return m, fmt.Errorf("empty mount control type")
 	}

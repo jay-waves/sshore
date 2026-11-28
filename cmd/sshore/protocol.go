@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/files/dirlist"
 	"github.com/jay-waves/sshore/internal/release"
+	"github.com/jay-waves/sshore/internal/ssh"
 )
 
 // Control metadata uses bounded frames. Approved file streams switch to
@@ -141,10 +141,7 @@ func writeControlJSON(w io.Writer, value any) error {
 	if err != nil {
 		return err
 	}
-	if len(body) > maxControlMessage {
-		return fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
-	}
-	return writeFull(w, append(body, '\n'))
+	return ssh.WriteControlFrame(w, body, maxControlMessage)
 }
 
 func readMessage(r io.Reader) (message, error) {
@@ -160,63 +157,14 @@ func readMessage(r io.Reader) (message, error) {
 }
 
 func readControlJSON(r io.Reader, target any, opts ...json.Options) error {
-	var body []byte
-	if lines, ok := r.(interface{ ReadSlice(byte) ([]byte, error) }); ok {
-		for {
-			part, err := lines.ReadSlice('\n')
-			if len(body)+len(part) > maxControlMessage+1 || err == bufio.ErrBufferFull && len(body)+len(part) > maxControlMessage {
-				return fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
-			}
-			if err == nil {
-				if body == nil {
-					return json.Unmarshal(part[:len(part)-1], target, opts...)
-				}
-				body = append(body, part[:len(part)-1]...)
-				break
-			}
-			if err != bufio.ErrBufferFull {
-				if err == io.EOF && len(body)+len(part) != 0 {
-					err = io.ErrUnexpectedEOF
-				}
-				return err
-			}
-			body = append(body, part...)
-		}
-	} else {
-		// Unbuffered readers may hand this same stream to a raw protocol.
-		var b [1]byte
-		for {
-			if _, err := io.ReadFull(r, b[:]); err != nil {
-				if err == io.EOF && len(body) != 0 {
-					err = io.ErrUnexpectedEOF
-				}
-				return err
-			}
-			if b[0] == '\n' {
-				break
-			}
-			if len(body) == maxControlMessage {
-				return fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
-			}
-			body = append(body, b[0])
-		}
+	body, err := ssh.ReadControlFrame(r, maxControlMessage)
+	if err != nil {
+		return err
 	}
 	return json.Unmarshal(body, target, opts...)
 }
 
-func writeFull(w io.Writer, b []byte) error {
-	for len(b) > 0 {
-		n, err := w.Write(b)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		b = b[n:]
-	}
-	return nil
-}
+func writeFull(w io.Writer, b []byte) error { return ssh.WriteFull(w, b) }
 
 func fileResponseError(m message) error {
 	if m.Error != "" {
