@@ -25,8 +25,7 @@ import (
 
 // The reader remains with the lease stream when a handshake switches to raw I/O.
 type clientStream struct {
-	net.Conn
-	reader      *bufio.Reader
+	bufferedConn
 	closeStream func()
 	stop        func() bool
 }
@@ -38,12 +37,13 @@ func ownClientTransport(ctx context.Context, stream net.Conn, cleanup func()) *c
 			cleanup()
 		}
 	})
-	return &clientStream{Conn: stream, reader: bufio.NewReader(stream), closeStream: closeStream, stop: context.AfterFunc(ctx, closeStream)}
+	buffered, ok := stream.(bufferedConn)
+	if !ok {
+		buffered = bufferedConn{stream, bufio.NewReader(stream)}
+	}
+	return &clientStream{bufferedConn: buffered, closeStream: closeStream, stop: context.AfterFunc(ctx, closeStream)}
 }
 
-func (c *clientStream) Read(b []byte) (int, error)           { return c.reader.Read(b) }
-func (c *clientStream) WriteTo(w io.Writer) (int64, error)   { return c.reader.WriteTo(w) }
-func (c *clientStream) ReadSlice(delim byte) ([]byte, error) { return c.reader.ReadSlice(delim) }
 func (c *clientStream) Close() error {
 	c.stop()
 	c.closeStream()

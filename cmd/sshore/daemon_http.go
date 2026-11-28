@@ -68,14 +68,14 @@ func daemonAuthorized(r *http.Request, record localShellRecord) bool {
 	return subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+record.Token)) == 1
 }
 
-type daemonStream struct {
+type bufferedConn struct {
 	net.Conn
 	reader *bufio.Reader
 }
 
-func (s daemonStream) Read(b []byte) (int, error)           { return s.reader.Read(b) }
-func (s daemonStream) WriteTo(w io.Writer) (int64, error)   { return s.reader.WriteTo(w) }
-func (s daemonStream) ReadSlice(delim byte) ([]byte, error) { return s.reader.ReadSlice(delim) }
+func (s bufferedConn) Read(b []byte) (int, error)           { return s.reader.Read(b) }
+func (s bufferedConn) WriteTo(w io.Writer) (int64, error)   { return s.reader.WriteTo(w) }
+func (s bufferedConn) ReadSlice(delim byte) ([]byte, error) { return s.reader.ReadSlice(delim) }
 
 func upgradeDaemonConn(ctx context.Context, c net.Conn, record localShellRecord, path string, input any) (stream net.Conn, result error) {
 	closeConn := sync.OnceFunc(func() { _ = c.Close() })
@@ -113,7 +113,7 @@ func upgradeDaemonConn(ctx context.Context, c net.Conn, record localShellRecord,
 	if err := checkPeerVersion(resp.Header.Get("Sshore-Version"), "daemon"); err != nil {
 		return nil, err
 	}
-	return daemonStream{c, reader}, nil
+	return bufferedConn{c, reader}, nil
 }
 
 func serveDaemonStream(w http.ResponseWriter, r *http.Request, serve func(net.Conn)) {
@@ -133,7 +133,7 @@ func serveDaemonStream(w http.ResponseWriter, r *http.Request, serve func(net.Co
 	if rw.Flush() != nil {
 		return
 	}
-	serve(daemonStream{c, rw.Reader})
+	serve(bufferedConn{c, rw.Reader})
 }
 
 func readDaemonBody(w http.ResponseWriter, r *http.Request, out any) bool {
