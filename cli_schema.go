@@ -791,13 +791,13 @@ on Apple Silicon Macs (experimental).
 		"lf": {
 			run: runFileBrowser, group: groupSSH, ssh: true, max: 2,
 			summary:  "Browse files and open a shell, copy or mount",
-			help:     "Usage: sshore lf [HOST | SOURCE PEER] [options]\n\nBrowse the current directory or the given host's home. Press s to open a shell.\nEnter opens a local file or directory with the system default app.\nUse l to enter a directory or open a local file, e for EDITOR and i for PAGER.\nPress y to copy the selected path.\nWith two endpoints, browse the first and use c to copy or m to mount.\nUse : for the local side and HOST:[PATH] for the SSH side. In an attached\nshell, use origin: as the second endpoint to request approval. q quits.\n" + sshOptions,
+			help:     "Usage: sshore lf [HOST | SOURCE PEER] [options]\n\nBrowse the current directory or the given host's home. Press s to open a shell.\nPress o to open a local file or directory with the system default app.\nUse l to enter a directory or open a local file, e for EDITOR and i for PAGER.\nPress y to copy the selected path.\nWith two endpoints, browse the first and use c to copy or m to mount.\nUse : for the local side and HOST:[PATH] for the SSH side. In an attached\nshell, use origin: as the second endpoint to request approval. q quits.\n" + sshOptions,
 			examples: "Browse the current directory\n  sshore lf\nBrowse a remote project and operate on it locally\n  sshore lf work:/srv/project :\nCopy a local selection to an SSH host\n  sshore lf : work:\n",
 		},
 		"lp": {
 			run: runPortBrowser, group: groupSSH, ssh: true, max: 2,
 			summary:  "Browse TCP and UDP ports and forward a service",
-			help:     "Usage: sshore lp [HOST | SOURCE TARGET] [options]\n\nBrowse bound UDP ports and TCP listeners. Some process names may require\nadministrator privileges. Use r to refresh, s to switch port/process sort, and y to copy the address.\nWith two endpoints, browse the first and press Enter\nto forward a service to the second. Use : for the local side and HOST: for the\nSSH side. In an attached shell, use origin: as the second endpoint to request\napproval. q quits.\n" + sshOptions,
+			help:     "Usage: sshore lp [HOST | SOURCE TARGET] [options]\n\nBrowse TCP listeners by default. Press u for UDP or t for TCP.\nThe header shows whether the browsing account is running as administrator.\nUse r to refresh, s to switch port/process sort, and y to copy the address.\nWith two endpoints, browse the first and press Enter\nto forward a service to the second. Use : for the local side and HOST: for the\nSSH side. In an attached shell, use origin: as the second endpoint to request\napproval. q quits.\n" + sshOptions,
 			examples: "Browse services on an SSH host\n  sshore lp work\nBrowse remote services and forward one to a local port\n  sshore lp work: :\n",
 		},
 		"forward": {

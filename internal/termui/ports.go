@@ -28,10 +28,10 @@ func comparePortProcess(a, b PortRow) int {
 }
 
 // PickPort returns the selected listener or a zero row for manual port entry.
-func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Context) ([]PortRow, error)) (selected PortRow, err error) {
+func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Context) ([]PortRow, bool, error)) (selected PortRow, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rows, err := load(ctx)
+	rows, admin, err := load(ctx)
 	if err != nil {
 		return PortRow{}, err
 	}
@@ -48,21 +48,19 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 	var screen listScreen
 	index := 0
 	size, resized := watchScreenSize(ctx)
-	var filtering, byProcess bool
+	var filtering, byProcess, udpOnly bool
 	var query []rune
-	visible := make([]int, 0, len(rows))
+	visible := make([]PortRow, 0, len(rows))
 	filter := func() {
 		visible = visible[:0]
 		needle := strings.ToLower(string(query))
-		for i, row := range rows {
-			if strings.Contains(strings.ToLower(row.Label), needle) {
-				visible = append(visible, i)
+		for _, row := range rows {
+			if row.UDP == udpOnly && strings.Contains(strings.ToLower(row.Label), needle) {
+				visible = append(visible, row)
 			}
 		}
 		if byProcess {
-			slices.SortStableFunc(visible, func(a, b int) int {
-				return comparePortProcess(rows[a], rows[b])
-			})
+			slices.SortStableFunc(visible, comparePortProcess)
 		}
 		index = 0
 	}
@@ -71,12 +69,11 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 		if len(visible) == 0 {
 			return PortRow{}
 		}
-		return rows[visible[index]]
+		return visible[index]
 	}
 	rebuild := func(previous PortRow) {
 		filter()
-		if i := slices.IndexFunc(visible, func(rowIndex int) bool {
-			row := rows[rowIndex]
+		if i := slices.IndexFunc(visible, func(row PortRow) bool {
 			return row.Address == previous.Address && row.UDP == previous.UDP
 		}); i >= 0 {
 			index = i
@@ -91,34 +88,54 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 		if byProcess {
 			sortLabel = "By process"
 		}
-		lines := []string{Render(color, Heading, "Bound ports") + "  ·  " + Render(color, Accent, CleanText(host)) + "  ·  " + sortLabel, Render(color, Muted, "PROTO  PORT    ADDRESS          PROCESS")}
-		page := max(1, h-4)
+		protocol := "TCP"
+		if udpOnly {
+			protocol = "UDP"
+		}
+		privilege := "Non-admin"
+		if admin {
+			privilege = "Admin"
+		}
+		header := strings.Join([]string{
+			Render(color, Heading, protocol+" ports"),
+			Render(color, Accent, CleanText(host)),
+			Render(color, Heading, privilege),
+			Render(color, Muted, sortLabel),
+		}, Render(color, Muted, "  ·  "))
+		lines := []string{header, Render(color, Muted, " Proto  Port    Address          Process")}
+		page := max(1, h-3)
 		first := max(0, index-page+1)
 		for i := first; i < min(len(visible), first+page); i++ {
-			row := ansi.Truncate(CleanText(rows[visible[i]].Label), w-1, "…")
+			row := CleanText(visible[i].Label)
 			if i == index {
 				row = "\x1b[7m" + row + "\x1b[0m"
 			}
-			lines = append(lines, row)
+			lines = append(lines, " "+row)
 		}
 		if len(visible) == 0 {
 			message := "No listeners"
 			if len(query) > 0 {
 				message = "No matches"
 			}
-			lines = append(lines, message)
+			lines = append(lines, Render(color, Muted, " "+message))
 		}
-		lines = append(lines, Render(color, Muted, "Some process names may require administrator privileges."))
-		hint := "↑/↓ Move  / Filter  r Refresh  s Sort  y Copy address  q Quit"
+		hint := "↑/↓ Move"
 		if forward {
-			hint = "↑/↓ Move  Enter Forward  / Filter  r Refresh  s Sort  y Copy address  : Enter port  q Quit"
+			hint += "  Enter Forward"
 		}
+		hint += "  t TCP  u UDP  / Filter  r Refresh  s Sort  y Copy address"
+		if forward {
+			hint += "  : Enter port"
+		}
+		hint += "  q Quit"
 		if filtering {
 			hint = "/" + string(query)
 		} else if status != "" {
-			hint = status
+			hint = Render(color, Info, status)
+		} else {
+			hint = shortcutLine(color, hint)
 		}
-		lines = append(lines, Render(color, Muted, hint))
+		lines = append(lines, hint)
 		for len(lines) < min(len(screen.rows), h) {
 			lines = append(lines, "")
 		}
@@ -140,11 +157,8 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 		keys:
 			for event := range decoder.feed(input.Data) {
 				r := event.value
-				if event.pasted {
-					if filtering && unicode.IsPrint(r) && len(query) < 128 {
-						query = append(query, r)
-						filter()
-					}
+				// Pasted text belongs only to the filter, never to command handling.
+				if event.pasted && (!filtering || !unicode.IsPrint(r)) {
 					continue
 				}
 				if filtering && r != keyUp && r != keyDown {
@@ -158,7 +172,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 					case '\n':
 						if forward {
 							if len(visible) > 0 {
-								return rows[visible[index]], nil
+								return visible[index], nil
 							}
 						} else {
 							filtering = false
@@ -185,7 +199,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 					if err := errors.Join(closeErr, c.close()); err != nil {
 						return PortRow{}, err
 					}
-					next, loadErr := load(ctx)
+					next, elevated, loadErr := load(ctx)
 					if err := c.open(); err != nil {
 						return PortRow{}, errors.Join(loadErr, err)
 					}
@@ -199,16 +213,19 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 						status = "Refresh failed. " + CleanText(loadErr.Error())
 						break keys
 					}
-					rows = next
+					rows, admin = next, elevated
 					rebuild(previous)
 					status = "Ports refreshed"
 					break keys
+				case 't', 'u':
+					udpOnly = r == 'u'
+					rebuild(selectedRow())
 				case 's':
 					byProcess = !byProcess
 					rebuild(selectedRow())
 				case 'y':
 					if len(visible) > 0 {
-						address := rows[visible[index]].Address
+						address := visible[index].Address
 						if err := copyToClipboard(terminal.out, address); err != nil {
 							return PortRow{}, err
 						}
@@ -220,7 +237,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 					return PortRow{}, context.Canceled
 				case ':':
 					if forward {
-						return PortRow{}, nil
+						return PortRow{UDP: udpOnly}, nil
 					}
 				case 'j', keyDown:
 					index = min(max(0, len(visible)-1), index+1)
@@ -228,7 +245,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 					index = max(0, index-1)
 				case '\n':
 					if forward && len(visible) > 0 {
-						return rows[visible[index]], nil
+						return visible[index], nil
 					}
 				}
 			}

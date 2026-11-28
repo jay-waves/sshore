@@ -54,8 +54,9 @@ console's `lf` requests the same pair over its existing control channel.
 The standalone file and port browsers open the first endpoint. A second endpoint
 enables copy and mount in the file browser or forwarding in the port browser.
 With a single SSH host or no arguments, the file browser can open a shell and the
-port browser lists listeners. Some process names may require administrator privileges.
-In the standalone local file browser, Enter uses the system default app. Use
+port browser shows TCP listeners by default. Use `u` for UDP and `t` for TCP.
+The header shows whether the account on the selected host has administrator privileges.
+In the standalone local file browser, `o` uses the system default app. Use
 `l` to enter a directory or open a file, `e` for the editor and `i` for the pager.
 Press `y` to copy the selected file path or port address through the terminal's
 OSC 52 clipboard support. In the port browser, `r` refreshes the list and

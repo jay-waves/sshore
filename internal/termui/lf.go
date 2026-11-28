@@ -262,6 +262,13 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 		index = next
 		child()
 	}
+	move := func(next int) {
+		next = max(0, min(next, len(panes[1].entries)-1))
+		if next != index {
+			index = next
+			child()
+		}
+	}
 	var display lfScreen
 	runFileAction := func(action string, run func() error) error {
 		if err := stopTerminal(); err != nil {
@@ -437,16 +444,11 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 						search(direction)
 					}
 				case 'g':
-					if goToTop && index != 0 {
-						index = 0
-						child()
+					if goToTop {
+						move(0)
 					}
 				case 'G':
-					last := max(0, len(panes[1].entries)-1)
-					if index != last {
-						index = last
-						child()
-					}
+					move(len(panes[1].entries) - 1)
 				case 3, 'q':
 					return nil, context.Canceled
 				case ':':
@@ -454,15 +456,9 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 						return nil, ErrLFManual
 					}
 				case 'k', keyUp:
-					if index > 0 {
-						index--
-						child()
-					}
+					move(index - 1)
 				case 'j', keyDown:
-					if index+1 < len(panes[1].entries) {
-						index++
-						child()
-					}
+					move(index + 1)
 				case 'h', keyLeft:
 					if parent := options.Parent(current); parent != current {
 						reveal = current
@@ -480,7 +476,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					command, err := lfFileCommand(ctx, variable, options.Join(current, panes[1].entries[index].Name), options.LocalFiles && startTerminal != nil)
 					validationErr = err
 					if errors.Is(err, errLFNonText) && options.BrowseAction != nil {
-						validationErr = fmt.Errorf("%w; use Enter to open with the system", err)
+						validationErr = fmt.Errorf("%w; use o to open with the system", err)
 					}
 					if err != nil {
 						continue
@@ -505,12 +501,12 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 						marked = append(marked, name)
 					}
 					validationErr = nil
-					if index+1 < len(panes[1].entries) {
-						index++
-						child()
-					}
-				case 'l', keyRight, '\n':
+					move(index + 1)
+				case 'o', 'l', keyRight, '\n':
 					enter := key == '\n'
+					if (options.BrowseAction != nil && enter) || (options.BrowseAction == nil && key == 'o') {
+						continue
+					}
 					if enter && len(marked) > 0 {
 						validationErr = validateSelection(marked)
 						if validationErr == nil {
@@ -526,7 +522,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					if entry.Name != "." {
 						name = options.Join(current, entry.Name)
 					}
-					if options.BrowseAction != nil && (enter || key == 'l' && !entry.IsDir) {
+					if options.BrowseAction != nil && (key == 'o' || key == 'l' && !entry.IsDir) {
 						if !options.LocalFiles || startTerminal == nil {
 							validationErr = errors.New("System open is available for local paths")
 							continue
@@ -618,7 +614,7 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 	header := Render(color, Heading, CleanText(options.Title))
 	if options.Host != "" {
 		if header != "" {
-			header += "  ·  "
+			header += Render(color, Muted, "  ·  ")
 		}
 		header += Render(color, Accent, CleanText(options.Host))
 	}
@@ -667,7 +663,10 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 				text = CleanText(entry.Name)
 				if entry.IsDir {
 					text += "/"
-					style = Info
+					style = Muted
+					if p == 1 {
+						style = Info
+					}
 				}
 				markedEntry = multi && p == 1 && !entry.IsDir && len(marked) > 0 && slices.Contains(marked, options.Join(dir, entry.Name))
 			} else if i == 0 && panes[p].loading {
@@ -678,6 +677,10 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 				style = Warning
 			}
 			textWidth := w
+			if w >= 8 && width >= 15 {
+				b.WriteByte(' ')
+				textWidth--
+			}
 			if multi && p == 1 && w >= 3 {
 				if markedEntry {
 					b.WriteString(Render(color, Success, "▌ "))
@@ -689,7 +692,11 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 			text = ansi.Truncate(text, textWidth, "…")
 			padding := strings.Repeat(" ", max(0, textWidth-ansi.StringWidth(text)))
 			if p == 1 && i == selected && i < len(panes[1].entries) {
-				b.WriteString("\x1b[7m" + text + padding + "\x1b[27m")
+				if len(padding) > 0 {
+					text += " "
+					padding = padding[1:]
+				}
+				b.WriteString("\x1b[7m" + text + "\x1b[27m" + padding)
 				continue
 			}
 			if p == 0 && i == parentIndex {
@@ -728,14 +735,18 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 		hint += "  : Type path"
 	}
 	if options.BrowseAction != nil {
-		hint = "s Shell  l Navigate  / Search  y Copy path  q Quit"
+		hint = "s Shell"
 		if options.BrowseTransfers {
-			hint = "s Shell  c Copy  m Mount  l Navigate  / Search  y Copy path  q Quit"
+			hint += "  c Copy  m Mount"
 		}
+		if !showFileActions {
+			hint += "  l Navigate"
+		}
+		hint += "  / Search  y Copy path  q Quit"
 	}
 	if showFileActions {
-		const actions = "Enter Open  l Enter dir/Open file  e Editor  i Pager"
-		lines = append(lines, Render(color, Muted, ansi.Truncate(actions, width-1, "")))
+		const actions = "o Open  l Enter dir/Open file  e Editor  i Pager"
+		lines = append(lines, ansi.Truncate(shortcutLine(color, actions), width-1, ""))
 	}
 	var footer string
 	var cursorColumn int
@@ -747,7 +758,7 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 	} else if s.notice != "" {
 		footer = Render(color, Muted, ansi.Truncate(s.notice, width-1, ""))
 	} else {
-		footer = Render(color, Muted, ansi.Truncate(hint, width-1, ""))
+		footer = ansi.Truncate(shortcutLine(color, hint), width-1, "")
 	}
 	return s.paint(out, width, append(lines, footer), cursorColumn)
 }

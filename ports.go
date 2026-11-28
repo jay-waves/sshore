@@ -15,18 +15,18 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
-func browseListeners(ctx context.Context, host string, ssh []string) ([]ports.Listener, error) {
+func browseListeners(ctx context.Context, host string, ssh []string) (ports.ListenerSnapshot, error) {
 	if host == "here" {
-		return ports.Listeners(ctx)
+		return ports.ReadListenerSnapshot(ctx)
 	}
 	stream, err := startHostService(ctx, host, ssh, "listeners")
 	if err != nil {
-		return nil, err
+		return ports.ListenerSnapshot{}, err
 	}
 	defer stream.CloseAndWait()
-	var rows []ports.Listener
+	var rows ports.ListenerSnapshot
 	if err := readControlJSON(bufio.NewReader(stream), &rows); err != nil {
-		return nil, err
+		return ports.ListenerSnapshot{}, err
 	}
 	return rows, stream.Wait()
 }
@@ -39,13 +39,13 @@ func runPortBrowser(a cliArguments) (int, error) {
 	var port string
 	var udp bool
 	err = termui.RunLocalConsole(func(console *termui.LocalConsole) error {
-		row, err := console.PickPort(loc.host, peer.host != "", func(ctx context.Context) ([]termui.PortRow, error) {
+		row, err := console.PickPort(loc.host, peer.host != "", func(ctx context.Context) ([]termui.PortRow, bool, error) {
 			listeners, err := browseListeners(ctx, loc.host, a.ssh)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
-			rows := make([]termui.PortRow, 0, len(listeners))
-			for _, listener := range listeners {
+			rows := make([]termui.PortRow, 0, len(listeners.Rows))
+			for _, listener := range listeners.Rows {
 				owner := listener.Process
 				if listener.PID > 0 {
 					owner = fmt.Sprintf("%s (%d)", cmp.Or(owner, "PID"), listener.PID)
@@ -56,7 +56,7 @@ func runPortBrowser(a cliArguments) (int, error) {
 					Address: net.JoinHostPort(listener.Address, port), Port: port, Process: listener.Process, UDP: listener.Protocol == "udp",
 				})
 			}
-			return rows, nil
+			return rows, listeners.Admin, nil
 		})
 		port, udp = row.Port, row.UDP
 		return err

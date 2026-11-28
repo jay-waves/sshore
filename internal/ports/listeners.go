@@ -18,6 +18,16 @@ type Listener struct {
 	Process  string
 }
 
+type ListenerSnapshot struct {
+	Rows  []Listener
+	Admin bool
+}
+
+func ReadListenerSnapshot(ctx context.Context) (ListenerSnapshot, error) {
+	rows, err := Listeners(ctx)
+	return ListenerSnapshot{Rows: rows, Admin: isAdmin()}, err
+}
+
 func Listeners(ctx context.Context) ([]Listener, error) {
 	names := map[int32]string{}
 	var rows []Listener

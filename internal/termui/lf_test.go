@@ -28,8 +28,8 @@ func TestLFShowsHostBeforePathAndHighlightsCurrentEntry(t *testing.T) {
 	}
 	_, highlighted, start := strings.Cut(out.String(), "\x1b[7m")
 	row, _, end := strings.Cut(highlighted, "\x1b[27m")
-	if !start || !end || strings.TrimSpace(row) != "src/" || ansi.StringWidth(row) != 13 {
-		t.Fatal("the selected directory did not get the full current column's reverse video")
+	if !start || !end || strings.TrimSpace(row) != "src/" || ansi.StringWidth(row) != 5 {
+		t.Fatal("reverse video should highlight just the selected name and its trailing space")
 	}
 }
 

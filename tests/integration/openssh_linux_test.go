@@ -574,8 +574,14 @@ Match command "printf forwarding-check"
 			if err != nil || !opened || !strings.Contains(screen, "\x1b[?1049l") {
 				t.Fatalf("%s did not restore the terminal: %v\n%s", tc.cmd, err, out)
 			}
-			if tc.cmd == "lp" && !strings.Contains(out, "Some process names may require administrator privileges.") {
-				t.Fatalf("port browser omitted its process-name permissions hint:\n%s", out)
+			if tc.cmd == "lp" {
+				privilege := "Non-admin"
+				if os.Geteuid() == 0 {
+					privilege = "Admin"
+				}
+				if !strings.Contains(ansi.Strip(out), "TCP ports  ·  here  ·  "+privilege) {
+					t.Fatalf("port browser omitted its TCP or privilege status:\n%s", out)
+				}
 			}
 			if strings.Contains(out, tc.disabled) {
 				t.Fatalf("%s offered a transfer without a second endpoint:\n%s", tc.cmd, out)
@@ -616,13 +622,13 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 				wait("\x1b[?1049h", true)
 				wait("s Shell", true)
 			}
-			waitForRedraw("j\r")
+			waitForRedraw("j\ro")
 			send("Gei")
-			wait("use Enter to open with the system", true)
-			waitForRedraw("\r")
+			wait("use o to open with the system", true)
+			waitForRedraw("o")
 			send("k")
 			wait("\x1b[7mz file", true)
-			waitForRedraw("\r")
+			waitForRedraw("o")
 			waitForRedraw("l")
 			send("y")
 			wait(ansi.SetSystemClipboard(file), true)
@@ -680,18 +686,33 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			t.Fatalf("mounted %q: %v", data, err)
 		}
 	})
-	scenario("file browser uploads to the peer from its command line", func(t *testing.T, ctx context.Context) {
-		src := t.TempDir()
-		if err := os.WriteFile(filepath.Join(src, "browser-upload"), []byte("from here"), 0600); err != nil {
+	scenario("paired file browser opens locally and confirms copy paths with Enter", func(t *testing.T, ctx context.Context) {
+		src, helpers := t.TempDir(), t.TempDir()
+		file := filepath.Join(src, "browser-upload")
+		if err := os.WriteFile(file, []byte("from here"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		cmd := command(ctx, "lf", ":", host+":browser-upload")
+		log := filepath.Join(helpers, "open.log")
+		const opener = "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$SSHORE_TEST_LF_ACTIONS\"\n"
+		if err := os.WriteFile(filepath.Join(helpers, "xdg-open"), []byte(opener), 0700); err != nil {
+			t.Fatal(err)
+		}
+		cmd := command(ctx, "lf", ":", host+":")
 		cmd.Dir = src
+		cmd.Env = append(cmd.Environ(), "PATH="+helpers+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"SSHORE_TEST_LF_ACTIONS="+log)
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
-			wait("c Copy", true)
-			send("jc")
+			wait("\x1b[7m./", true)
+			send("j\ro")
+			wait("\x1b[?1049h", true)
+			wait("\x1b[7mbrowser-upload", true)
+			send("c")
+			wait("Choose upload destination", true)
+			wait("\x1b[7m./", true)
+			send("\r")
 			wait("Copied")
 		})
+		requireFile(t, log, file+"\n")
 		if got := run(t, ctx, "sh", host, "--", "cat browser-upload"); got != "from here" {
 			t.Fatalf("uploaded %q", got)
 		}
@@ -1128,6 +1149,12 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 				}
 				out, err = runTerminal(t, ctx, command(ctx, "lp", first, peer+":"), func(send func(string), wait terminalWait) {
 					wait("Enter Forward", true)
+					send("u")
+					wait("UDP ports", true)
+					send("t")
+					wait("TCP ports", true)
+					send("u")
+					wait("UDP ports", true)
 					send("/" + source + "\r")
 					wait("Listen on "+peer+" at port:", true)
 					send("\x15" + port + "\r")

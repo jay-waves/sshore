@@ -34,7 +34,7 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		account, _ := localMachineIdentity()
 		return files.ServeAgent(agentStdio(), req.Mode, version, account, remoteFileHome(), req.PeerMetadata, beginIncomingMountTask)
 	case "listeners":
-		rows, err := ports.Listeners(context.Background())
+		rows, err := ports.ReadListenerSnapshot(context.Background())
 		if err != nil {
 			return err
 		}

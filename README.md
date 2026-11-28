@@ -169,13 +169,13 @@ macOS builds. Use `sshore kill ID` to unmount.
 ```sh
 sshore lf                      # Browse the local current directory
 sshore lf work                 # Browse the remote home directory
-sshore lf : work:              # Browse locally with copy and mount enabled
+sshore lf : pi:                # Browse locally with copy and mount enabled
 sshore lf work:/srv/project :  # Browse remotely with copy and mount enabled
 ```
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Open a local file or directory in the system default app |
+| `o` | Open a local file or directory in the system default app |
 | `e` / `i` | Edit or view local text with `$EDITOR` / `$PAGER` |
 | `l` | Enter a directory or open a local file |
 | `y` | Copy the selected path |
@@ -183,6 +183,7 @@ sshore lf work:/srv/project :  # Browse remotely with copy and mount enabled
 | `c` / `m` | Copy / mount when both endpoints are set |
 | `q` | Quit |
 
+Press `Enter` to confirm a path in the copy or mount picker.
 System open uses `xdg-open` on Linux, `open` on macOS, and `ShellExecute` on Windows.
 
 ### `lp` — Browse TCP and UDP ports

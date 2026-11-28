@@ -48,6 +48,19 @@ func watchScreenSize(ctx context.Context) (screenSize, <-chan screenSize) {
 	return initial, changes
 }
 
+// Shortcut groups use two spaces between commands and one after the key.
+func shortcutLine(color bool, line string) string {
+	if !color {
+		return line
+	}
+	groups := strings.Split(line, "  ")
+	for i, group := range groups {
+		key, label, _ := strings.Cut(group, " ")
+		groups[i] = Render(true, Heading, key) + " " + Render(true, Muted, label)
+	}
+	return strings.Join(groups, "  ")
+}
+
 type listScreen struct {
 	rows         []string
 	width        int
