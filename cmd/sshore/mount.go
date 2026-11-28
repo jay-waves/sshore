@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json/jsontext"
@@ -75,12 +74,7 @@ func validateLocalMountpoint(path string) (string, error) {
 }
 
 func readMountApprovalPath(input reviewPromptReader, hint string) (string, error) {
-	return readReviewPath(input, "Mountpoint (.: automatic): ", cmp.Or(hint, ".:"), true, func(path string) (string, error) {
-		if path == ".:" {
-			return "", nil
-		}
-		return validateLocalMountpoint(path)
-	})
+	return readReviewPath(input, "Mountpoint (Enter on a blank line to auto-assign): ", hint, true, validateLocalMountpoint)
 }
 
 var mountHistoryBucket = []byte("mount-visits")

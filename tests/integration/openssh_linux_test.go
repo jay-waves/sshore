@@ -1020,8 +1020,8 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			send("printf '%s\\n' \"$$\" > approval-lifecycle/shell.pid && sshore mount .:approval-lifecycle ..: --read-only\n")
 			wait("Approve this request? [y/N]", true)
 			send("y\r")
-			wait("Mountpoint (.: automatic):", true)
-			send("\x15" + point + "\r")
+			wait("Mountpoint (Enter on a blank line to auto-assign):", true)
+			send(point + "\r")
 			wait("Started mount/")
 			wait("Connected " + endpoint)
 			prompt := "Local target port (Enter to approve, Ctrl-C to cancel):"

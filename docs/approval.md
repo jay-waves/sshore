@@ -12,8 +12,8 @@ before requesting approval. Use `cp ..: .: --lf` to browse for the source on the
 File and mount requests show `Approve this request? [y/N]` before local endpoint
 selection. For a forward, the screen shows the direction and fixed remote endpoint.
 Submitting a valid local port approves that mapping. The remote port is prefilled when the
-request omits the local port. For a mount, the suggested mountpoint is editable and `.:` is
-prefilled when no location was suggested. Use `--lf` to browse for a mountpoint.
+request omits the local port. For a mount, edit the suggested mountpoint or press Enter on a
+blank line to allocate one automatically. Use `--lf` to browse for a mountpoint.
 
 Cancel, EOF or lack of an interactive terminal rejects the request without executing it.
 Grants are single-use, and there is no pending request queue. Unsolicited transfer offers,
