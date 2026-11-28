@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"fmt"
-	"io"
 	"path"
 	"strings"
 	"sync"
@@ -17,7 +16,7 @@ const ftpWatchTimeout = 3 * time.Second
 // Watches are hints: TTLs remain mandatory for unsupported filesystems, symlink
 // retargeting and mutations through other hard links. Never cache file contents.
 type ftpNotifications struct {
-	stream        io.ReadWriteCloser
+	stream        *mountStream
 	cache         *ftpMetadataCache
 	mu            sync.Mutex // protects subscription state, never held during transport I/O
 	dirs          map[string]ftpWatchEntry
@@ -45,7 +44,7 @@ type ftpWatchEntry struct {
 	ready      chan struct{} // Non-nil while a registration is queued or in flight.
 }
 
-func startFTPNotifications(s io.ReadWriteCloser, cache *ftpMetadataCache, onUnavailable func()) *ftpNotifications {
+func startFTPNotifications(s *mountStream, cache *ftpMetadataCache, onUnavailable func()) *ftpNotifications {
 	n := &ftpNotifications{stream: s, cache: cache, onUnavailable: onUnavailable, dirs: make(map[string]ftpWatchEntry), done: make(chan struct{}), queue: make(chan string, ftpWatchLimit)}
 	if s == nil {
 		n.stop(true)
@@ -141,7 +140,7 @@ func (n *ftpNotifications) stop(warn bool) {
 	if n.stream == nil {
 		return
 	}
-	if stream, ok := n.stream.(interface{ SetReadDeadline(time.Time) error }); ok {
+	if stream, ok := n.stream.ReadWriteCloser.(interface{ SetReadDeadline(time.Time) error }); ok {
 		_ = stream.SetReadDeadline(time.Now())
 	}
 	// Close the endpoint without delaying filesystem callbacks.
@@ -271,7 +270,7 @@ func (n *ftpNotifications) register(dir string, timer *time.Timer) {
 	}
 }
 
-func negotiateMount(c io.ReadWriter, mode, version string, source *MountApproval, peer jsontext.Value) (message, error) {
+func negotiateMount(c *mountStream, mode, version string, source *MountApproval, peer jsontext.Value) (message, error) {
 	// Direct SSH already sent the mode in the service request. Approved streams
 	// still bind each stream to its authorized operation.
 	if source != nil {

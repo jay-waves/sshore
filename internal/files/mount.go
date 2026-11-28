@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/ssh"
 	sftp "github.com/pkg/sftp/v2"
 	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
 	"github.com/pkg/sftp/v2/localfs"
-	"github.com/xtaci/smux"
 )
 
 // MountConfig contains mount settings and endpoint openers. Open provides the
@@ -121,9 +121,9 @@ func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error)
 		return 1, err
 	}
 	closeEndpoint := endpoint.Close
-	var session *smux.Session
+	var session *ssh.StreamMux
 	if o.Approval != nil {
-		session, err = smux.Client(endpoint, nil)
+		session, err = ssh.NewStreamMux(endpoint, true, ssh.SharedStreamWindow)
 		if err != nil {
 			_ = endpoint.Close()
 			return 1, err
@@ -184,7 +184,7 @@ func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error)
 		return 1, fmt.Errorf("mount agent handshake: %w", err)
 	}
 	account = ready.Account
-	var events io.ReadWriteCloser
+	var events *mountStream
 	if o.OpenNotifications != nil {
 		endpoint, watchErr := o.OpenNotifications(ctx)
 		if watchErr == nil {
@@ -395,10 +395,7 @@ func newMountStream(c io.ReadWriteCloser) *mountStream {
 	return &mountStream{ReadWriteCloser: c, reader: bufio.NewReader(c)}
 }
 
-func (c *mountStream) Read(b []byte) (int, error)           { return c.reader.Read(b) }
-func (c *mountStream) ReadByte() (byte, error)              { return c.reader.ReadByte() }
-func (c *mountStream) ReadSlice(delim byte) ([]byte, error) { return c.reader.ReadSlice(delim) }
-
+func (c *mountStream) Read(b []byte) (int, error) { return c.reader.Read(b) }
 func writeMessage(w io.Writer, m message) error {
 	body, err := json.Marshal(m)
 	if err != nil {
@@ -410,42 +407,38 @@ func writeMessage(w io.Writer, m message) error {
 	return writeFull(w, append(body, '\n'))
 }
 
-func readMessage(r io.Reader) (message, error) {
-	var m message
-	reader, ok := r.(interface{ ReadByte() (byte, error) })
-	if !ok {
-		reader = mountByteReader{r}
-	}
+func readMessage(r *mountStream) (message, error) {
 	var body []byte
 	for {
-		b, err := reader.ReadByte()
-		if err != nil {
-			if err == io.EOF && len(body) != 0 {
-				err = io.ErrUnexpectedEOF
-			}
-			return m, err
+		part, err := r.reader.ReadSlice('\n')
+		if err == nil {
+			part = part[:len(part)-1]
 		}
-		if b == '\n' {
+		if len(part) > maxMountMessage-len(body) {
+			return message{}, fmt.Errorf("mount message exceeds %d bytes", maxMountMessage)
+		}
+		if err == nil {
+			if body == nil {
+				body = part
+			} else {
+				body = append(body, part...)
+			}
 			break
 		}
-		if len(body) == maxMountMessage {
-			return m, fmt.Errorf("mount message exceeds %d bytes", maxMountMessage)
+		if err != bufio.ErrBufferFull {
+			if err == io.EOF && len(body)+len(part) != 0 {
+				err = io.ErrUnexpectedEOF
+			}
+			return message{}, err
 		}
-		body = append(body, b)
+		body = append(body, part...)
 	}
+	var m message
 	err := json.Unmarshal(body, &m)
 	if err == nil && m.Type == "" {
 		return m, fmt.Errorf("empty mount control type")
 	}
 	return m, err
-}
-
-type mountByteReader struct{ io.Reader }
-
-func (r mountByteReader) ReadByte() (byte, error) {
-	var b [1]byte
-	_, err := io.ReadFull(r.Reader, b[:])
-	return b[0], err
 }
 
 func serveMountData(data io.ReadWriteCloser) error {

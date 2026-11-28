@@ -7,8 +7,8 @@ connection, the client deploys its matching server through SSH and the standard
 SFTP subsystem. Later connections use the saved path and only reopen SFTP
 when checking a failed launch. They publish a replacement if the binary is
 missing. Each client and release has its own remote daemon and state.
-The client shows SFTP upload progress on stderr when it deploys or replaces a
-server.
+The client shows HTTP download and SFTP upload progress on stderr when it
+deploys a server from a release archive.
 
 | Command | Transport | Startup exchange |
 | --- | --- | --- |
@@ -23,6 +23,39 @@ server.
 Each SSH control or terminal channel has its own flow-control window. Same-host session switches
 can reuse the SSH transport. A connection started inside another shell uses that machine's client,
 SSH configuration and credentials. The outer session stays attached throughout.
+
+## Transport boundaries
+
+[`internal/ssh`](../internal/ssh/) owns the authenticated `Client` and its SSH
+channels. A `Process` represents an exec channel and exposes input half-close,
+output and exit status.
+
+[`StreamMux`](../internal/ssh/stream_mux.go) opens and accepts reliable child
+streams over one existing carrier. smux is its implementation. Forwarding
+uses per-stream flow control, and approved mounts use the shared-window profile
+for their data and notification streams. The terminal task manager in
+[`internal/tmux`](../internal/tmux/) owns terminal tasks and attachments.
+
+`Datagram` preserves packet boundaries on a child stream using length framing.
+The carrier delivers packets reliably and in order. Retransmission can delay later
+packets. [UDP forwarding](../internal/ports/udp.go) owns local sockets, sender
+routing, idle expiry and queue overflow. Small queued packets reuse storage after
+successful sends. The framing buffer travels with the payload through the send.
+
+The SSH packet reader also reads the identification line, preserving any
+key-exchange bytes that arrived with it. Drained SSH channels reuse their last
+receive queue element. Direct forward clients put child stream headers and
+payloads into SSH packets from separate slices. Terminal output events own their
+read buffers until the frontend consumes them. Run the loopback SSH benchmarks with:
+
+```sh
+go run ./scripts go test ./tests/benchmarks -run '^$' -bench '^BenchmarkSSH' -benchmem
+```
+
+The handshake benchmark reports reads through the end of the SSH identification
+line. The channel benchmark measures allocations and latency for SSH echo traffic.
+
+## Diagnostics and browsing
 
 For SSH connections, `-v` and `--verbose` send diagnostics to stderr. These include the
 resolved endpoint and user, server version and host key fingerprint, identity file paths

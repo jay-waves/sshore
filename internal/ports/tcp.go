@@ -6,7 +6,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/xtaci/smux"
+	"github.com/jay-waves/sshore/internal/ssh"
 )
 
 // relayTCP preserves half-close so a peer can reply after reading a full request.
@@ -46,14 +46,14 @@ func relayTCP(ctx context.Context, a, b io.ReadWriteCloser) {
 	<-done
 }
 
-func serveTCPListener(ctx context.Context, tcp net.Listener, mux *smux.Session, workers *sync.WaitGroup) {
+func serveTCPListener(ctx context.Context, tcp net.Listener, streams *ssh.StreamMux, workers *sync.WaitGroup) {
 	for {
 		conn, err := tcp.Accept()
 		if err != nil {
 			break
 		}
 		workers.Go(func() {
-			stream, err := mux.OpenStream()
+			stream, err := streams.OpenStream()
 			if err != nil {
 				conn.Close()
 				return

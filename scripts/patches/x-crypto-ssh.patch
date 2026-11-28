@@ -1,0 +1,202 @@
+--- a/ssh/channel.go
++++ b/ssh/channel.go
+@@ -244,7 +244,19 @@
+ 
+ // WriteExtended writes data to a specific extended stream. These streams are
+ // used, for example, for stderr.
+-func (ch *channel) WriteExtended(data []byte, extendedCode uint32) (n int, err error) {
++func (ch *channel) WriteExtended(data []byte, extendedCode uint32) (int, error) {
++	return ch.writeExtended(data, nil, extendedCode)
++}
++
++// WriteBuffers places separate payload slices directly into SSH packets.
++func (ch *channel) WriteBuffers(parts [][]byte) (int, error) {
++	if len(parts) == 0 {
++		return ch.WriteExtended(nil, 0)
++	}
++	return ch.writeExtended(parts[0], parts[1:], 0)
++}
++
++func (ch *channel) writeExtended(data []byte, rest [][]byte, extendedCode uint32) (n int, err error) {
+ 	if ch.sentEOF {
+ 		return 0, io.EOF
+ 	}
+@@ -263,8 +275,15 @@
+ 	// flagged as errors by the race detector.
+ 	ch.writeMu.Unlock()
+ 
+-	for len(data) > 0 {
+-		space := minPayloadSize(ch.maxRemotePayload, len(data))
++	remaining := len(data)
++	for _, part := range rest {
++		if len(part) > int(^uint(0)>>1)-remaining {
++			return 0, errors.New("ssh: write buffer size overflows int")
++		}
++		remaining += len(part)
++	}
++	for remaining > 0 {
++		space := minPayloadSize(ch.maxRemotePayload, remaining)
+ 		if space, err = ch.remoteWin.reserve(space); err != nil {
+ 			return n, err
+ 		}
+@@ -274,21 +293,26 @@
+ 			packet = packet[:want]
+ 		}
+ 
+-		todo := data[:space]
+-
+ 		packet[0] = opCode
+ 		binary.BigEndian.PutUint32(packet[1:], ch.remoteId)
+ 		if extendedCode > 0 {
+ 			binary.BigEndian.PutUint32(packet[5:], uint32(extendedCode))
+ 		}
+-		binary.BigEndian.PutUint32(packet[headerLength-4:], uint32(len(todo)))
+-		copy(packet[headerLength:], todo)
++		binary.BigEndian.PutUint32(packet[headerLength-4:], space)
++		todo := packet[headerLength:]
++		for len(todo) > 0 {
++			if len(data) == 0 {
++				data, rest = rest[0], rest[1:]
++			}
++			n := copy(todo, data)
++			todo, data = todo[n:], data[n:]
++		}
+ 		if err = ch.writePacket(packet); err != nil {
+ 			return n, err
+ 		}
+ 
+-		n += len(todo)
+-		data = data[len(todo):]
++		n += int(space)
++		remaining -= int(space)
+ 	}
+ 
+ 	ch.writeMu.Lock()
+--- a/ssh/session.go
++++ b/ssh/session.go
+@@ -535,6 +535,24 @@
+ 	ch Channel
+ }
+ 
++func (s *sessionStdin) WriteBuffers(parts [][]byte) (int, error) {
++	if writer, ok := s.Writer.(interface{ WriteBuffers([][]byte) (int, error) }); ok {
++		return writer.WriteBuffers(parts)
++	}
++	var written int
++	for _, part := range parts {
++		n, err := s.Write(part)
++		written += n
++		if err != nil {
++			return written, err
++		}
++		if n != len(part) {
++			return written, io.ErrShortWrite
++		}
++	}
++	return written, nil
++}
++
+ func (s *sessionStdin) Close() error {
+ 	return s.ch.CloseWrite()
+ }
+--- a/ssh/client.go
++++ b/ssh/client.go
+@@ -122,14 +122,15 @@
+ 	} else {
+ 		c.clientVersion = []byte(packageVersion)
+ 	}
++	tr := newTransport(c.sshConn.conn, config.Rand, true /* is client */)
+ 	var err error
+-	c.serverVersion, err = exchangeVersions(c.sshConn.conn, c.clientVersion)
++	c.serverVersion, err = exchangeVersions(versionExchangeIO{tr.bufReader, c.sshConn.conn}, c.clientVersion)
+ 	if err != nil {
+ 		return err
+ 	}
+ 
+ 	c.transport = newClientTransport(
+-		newTransport(c.sshConn.conn, config.Rand, true /* is client */),
++		tr,
+ 		c.clientVersion, c.serverVersion, config, dialAddress, c.sshConn.RemoteAddr())
+ 	if err := c.transport.waitSession(); err != nil {
+ 		return err
+--- a/ssh/server.go
++++ b/ssh/server.go
+@@ -398,13 +398,13 @@
+ 	} else {
+ 		s.serverVersion = []byte(packageVersion)
+ 	}
++	tr := newTransport(s.sshConn.conn, config.Rand, false /* not client */)
+ 	var err error
+-	s.clientVersion, err = exchangeVersions(s.sshConn.conn, s.serverVersion)
++	s.clientVersion, err = exchangeVersions(versionExchangeIO{tr.bufReader, s.sshConn.conn}, s.serverVersion)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 
+-	tr := newTransport(s.sshConn.conn, config.Rand, false /* not client */)
+ 	s.transport = newServerTransport(tr, s.clientVersion, s.serverVersion, config)
+ 
+ 	if err := s.transport.waitSession(); err != nil {
+--- a/ssh/transport.go
++++ b/ssh/transport.go
+@@ -304,6 +304,13 @@
+ 
+ const packageVersion = "SSH-2.0-Go"
+ 
++// Use the packet reader for version exchange so bytes read past the newline
++// (including an immediately following key exchange) stay on the transport.
++type versionExchangeIO struct {
++	*bufio.Reader
++	io.Writer
++}
++
+ // Sends and receives a version line.  The versionLine string should
+ // be US ASCII, start with "SSH-2.0-", and should not include a
+ // newline. exchangeVersions returns the other side's version line.
+@@ -336,9 +343,15 @@
+ 	versionString := make([]byte, 0, 64)
+ 	var ok bool
+ 	var buf [1]byte
++	reader, buffered := r.(io.ByteReader)
+ 
+ 	for length := 0; length < maxVersionStringBytes; length++ {
+-		_, err := io.ReadFull(r, buf[:])
++		var err error
++		if buffered {
++			buf[0], err = reader.ReadByte()
++		} else {
++			_, err = io.ReadFull(r, buf[:])
++		}
+ 		if err != nil {
+ 			return nil, err
+ 		}
+--- a/ssh/buffer.go
++++ b/ssh/buffer.go
+@@ -43,9 +43,14 @@
+ // buf must not be modified after the call to write.
+ func (b *buffer) write(buf []byte) {
+ 	b.Cond.L.Lock()
+-	e := &element{buf: buf}
+-	b.tail.next = e
+-	b.tail = e
++	if b.head == b.tail && len(b.head.buf) == 0 {
++		// The reader drained the queue. Reuse its last element.
++		b.head.buf = buf
++	} else {
++		e := &element{buf: buf}
++		b.tail.next = e
++		b.tail = e
++	}
+ 	b.Cond.Signal()
+ 	b.Cond.L.Unlock()
+ }
+@@ -70,6 +75,9 @@
+ 		if len(b.head.buf) > 0 {
+ 			r := copy(buf, b.head.buf)
+ 			buf, b.head.buf = buf[r:], b.head.buf[r:]
++			if len(b.head.buf) == 0 {
++				b.head.buf = nil
++			}
+ 			n += r
+ 			continue
+ 		}

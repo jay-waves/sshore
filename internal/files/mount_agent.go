@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/xtaci/smux"
+	"github.com/jay-waves/sshore/internal/ssh"
 )
 
 func ServeAgent(conn io.ReadWriteCloser, mode, version, account, home string, peer jsontext.Value, observe func(jsontext.Value) func()) error {
@@ -24,7 +24,7 @@ func ServeAgent(conn io.ReadWriteCloser, mode, version, account, home string, pe
 }
 
 func ServeApprovedMount(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), approval MountApproval) error {
-	session, err := smux.Server(conn, nil)
+	session, err := ssh.NewStreamMux(conn, false, ssh.SharedStreamWindow)
 	if err != nil {
 		_ = conn.Close()
 		return err
@@ -65,7 +65,7 @@ func serveApprovedMountStream(conn io.ReadWriteCloser, version, account string, 
 	return serveMountAgent(wire, m, version, account, "", observe, &approval)
 }
 
-func serveMountAgent(conn io.ReadWriteCloser, m message, version, account, home string, observe func(jsontext.Value) func(), approval *MountApproval) error {
+func serveMountAgent(conn *mountStream, m message, version, account, home string, observe func(jsontext.Value) func(), approval *MountApproval) error {
 	if runtime.GOARCH != "amd64" {
 		return fmt.Errorf("mount agent requires amd64")
 	}
@@ -106,7 +106,7 @@ func serveMountAgent(conn io.ReadWriteCloser, m message, version, account, home 
 	return serveMountData(conn)
 }
 
-func serveFTPWatch(stream io.ReadWriteCloser) {
+func serveFTPWatch(stream *mountStream) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return
@@ -116,7 +116,7 @@ func serveFTPWatch(stream io.ReadWriteCloser) {
 	defer func() {
 		close(stop)
 		// Release a blocked read during endpoint shutdown.
-		if s, ok := stream.(interface{ SetReadDeadline(time.Time) error }); ok {
+		if s, ok := stream.ReadWriteCloser.(interface{ SetReadDeadline(time.Time) error }); ok {
 			_ = s.SetReadDeadline(time.Now())
 		}
 		_ = stream.Close()

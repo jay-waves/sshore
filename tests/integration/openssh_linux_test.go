@@ -2231,13 +2231,13 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 	})
 }
 
-// Two outstanding requests receive replies in reverse order. The empty and
-// maximum-sized packets also exercise message boundaries across smux frames.
+// Outstanding requests receive replies in reverse order. Empty, ordinary and
+// maximum-sized packets exercise message boundaries and both buffer sizes.
 func checkUDPExchange(t *testing.T, service *net.UDPConn, dest *net.UDPAddr) {
 	t.Helper()
-	var clients [2]*net.UDPConn
-	senders := make([]*net.UDPAddr, 2)
-	payloads := [][]byte{{}, bytes.Repeat([]byte{0xa5}, 65507)}
+	payloads := [][]byte{{}, bytes.Repeat([]byte{0x5a}, 1400), bytes.Repeat([]byte{0xa5}, 65507)}
+	clients := make([]*net.UDPConn, len(payloads))
+	senders := make([]*net.UDPAddr, len(payloads))
 	buf := make([]byte, 65535)
 	service.SetDeadline(time.Now().Add(4 * time.Second))
 	for i, payload := range payloads {

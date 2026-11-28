@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xtaci/smux"
+	"github.com/jay-waves/sshore/internal/ssh"
 )
 
 func Loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }
@@ -54,25 +54,19 @@ func (rule Rule) Start(parent context.Context, initiator bool, open func() (io.R
 	stopSetup := context.AfterFunc(parent, func() { conn.Close() })
 	defer stopSetup()
 
-	config := smux.DefaultConfig()
-	config.Version = 2 // A stalled connection must not exhaust the shared receive buffer.
-	newMux := smux.Server
-	if initiator {
-		newMux = smux.Client
-	}
-	mux, err := newMux(conn, config)
+	streams, err := ssh.NewStreamMux(conn, initiator, ssh.PerStreamWindow)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		if err != nil {
-			mux.Close()
+			streams.Close()
 		}
 	}()
 
-	getControl := mux.AcceptStream
+	getControl := streams.AcceptStream
 	if initiator {
-		getControl = mux.OpenStream
+		getControl = streams.OpenStream
 	}
 	control, err := getControl()
 	if err != nil {
@@ -85,7 +79,7 @@ func (rule Rule) Start(parent context.Context, initiator bool, open func() (io.R
 		if listener != nil {
 			listener.Close()
 		}
-		mux.Close()
+		streams.Close()
 	})
 	stopOnCancel := context.AfterFunc(ctx, stop)
 	s := &Session{Writer: control, stop: stop, done: make(chan struct{})}
@@ -105,11 +99,11 @@ func (rule Rule) Start(parent context.Context, initiator bool, open func() (io.R
 		var workers sync.WaitGroup
 		switch {
 		case udp != nil:
-			serveUDPListener(udp, mux, &workers)
+			serveUDPListener(udp, streams, &workers)
 		case tcp != nil:
-			serveTCPListener(ctx, tcp, mux, &workers)
+			serveTCPListener(ctx, tcp, streams, &workers)
 		default:
-			rule.serveTarget(ctx, targetPort, mux, &workers)
+			rule.serveTarget(ctx, targetPort, streams, &workers)
 		}
 		stop()
 		workers.Wait()
@@ -127,9 +121,9 @@ type Session struct {
 func (s *Session) Wait()  { <-s.done }
 func (s *Session) Close() { s.stop(); s.Wait() }
 
-func (rule Rule) serveTarget(ctx context.Context, targetPort int, mux *smux.Session, workers *sync.WaitGroup) {
+func (rule Rule) serveTarget(ctx context.Context, targetPort int, streams *ssh.StreamMux, workers *sync.WaitGroup) {
 	for {
-		stream, err := mux.AcceptStream()
+		stream, err := streams.AcceptStream()
 		if err != nil {
 			break
 		}

@@ -168,6 +168,9 @@ func readControlJSON(r io.Reader, target any, opts ...json.Options) error {
 				return fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
 			}
 			if err == nil {
+				if body == nil {
+					return json.Unmarshal(part[:len(part)-1], target, opts...)
+				}
 				body = append(body, part[:len(part)-1]...)
 				break
 			}

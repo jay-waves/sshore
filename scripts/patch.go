@@ -27,6 +27,7 @@ func withPatchedModules(run func(workspace string) error) error {
 	for _, patch := range []struct{ module, name string }{
 		{"github.com/pkg/sftp/v2", "pkg-sftp-v2"},
 		{"github.com/winfsp/go-winfsp", "go-winfsp"},
+		{"golang.org/x/crypto", "x-crypto-ssh"},
 	} {
 		if err := patchModule(root, workspace, patch.module, patch.name); err != nil {
 			return err

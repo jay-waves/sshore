@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -277,7 +278,7 @@ func (c *Client) keepalive(interval time.Duration, count int) {
 
 // Process is an SSH exec channel. CloseWrite sends channel EOF; Close aborts
 // its I/O and closes the connection only when created by the package-level Start.
-// Wait must be called after consuming stdout.
+// Stdout has a single reader. Wait must be called after consuming stdout.
 type Process struct {
 	command string
 	stdin   processInput
@@ -319,8 +320,45 @@ func (c *Client) DialTCP(ctx context.Context, address string) (net.Conn, error) 
 	return c.DialContext(ctx, "tcp", address)
 }
 
-func (p *Process) Read(b []byte) (int, error)  { return p.stdout.Read(b) }
+func (p *Process) Read(b []byte) (int, error) { return p.stdout.Read(b) }
+
+// ReadSlice buffers stdout on the first control record and keeps any read-ahead
+// bytes available to Read when the service switches to a binary protocol.
+func (p *Process) ReadSlice(delim byte) ([]byte, error) {
+	reader, ok := p.stdout.(*bufio.Reader)
+	if !ok {
+		reader = bufio.NewReader(p.stdout)
+		p.stdout = reader
+	}
+	return reader.ReadSlice(delim)
+}
+
 func (p *Process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
+
+// WriteBuffers sends a vector through the same channel write reservation.
+func (p *Process) WriteBuffers(parts [][]byte) (int, error) {
+	p.stdin.mu.Lock()
+	defer p.stdin.mu.Unlock()
+	if p.stdin.writer == nil {
+		return 0, io.ErrClosedPipe
+	}
+	out := p.stdin.writer
+	if writer, ok := out.(interface{ WriteBuffers([][]byte) (int, error) }); ok {
+		return writer.WriteBuffers(parts)
+	}
+	var total int
+	for _, part := range parts {
+		n, err := out.Write(part)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n != len(part) {
+			return total, io.ErrShortWrite
+		}
+	}
+	return total, nil
+}
 
 // CloseWrite sends EOF while the caller continues reading stdout.
 func (p *Process) CloseWrite() error { return p.stdin.Close() }

@@ -42,6 +42,7 @@ func ownClientTransport(ctx context.Context, stream net.Conn, cleanup func()) *c
 }
 
 func (c *clientStream) Read(b []byte) (int, error)           { return c.reader.Read(b) }
+func (c *clientStream) WriteTo(w io.Writer) (int64, error)   { return c.reader.WriteTo(w) }
 func (c *clientStream) ReadSlice(delim byte) ([]byte, error) { return c.reader.ReadSlice(delim) }
 func (c *clientStream) Close() error {
 	c.stop()

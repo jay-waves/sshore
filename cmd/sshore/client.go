@@ -70,6 +70,10 @@ func newClientSignals(recovering bool) (context.Context, *clientSignals, func())
 
 const terminalCloseGrace = 2 * time.Second
 
+type terminalReadBuffer [32 * 1024]byte
+
+var terminalReadBuffers = sync.Pool{New: func() any { return new(terminalReadBuffer) }}
+
 type clientEvent struct {
 	consoleSource     *commandConsole
 	consoleGeneration uint64
@@ -85,7 +89,8 @@ type clientEvent struct {
 	outputIncomplete  bool
 	m                 *message
 	input             []byte
-	output            []byte
+	output            *terminalReadBuffer
+	outputLen         int
 	err               error
 }
 
@@ -137,16 +142,18 @@ func readAttachmentEvents(ctx context.Context, control attachmentControl, termin
 	}()
 	go func() {
 		defer close(outputDone)
-		buf := make([]byte, 32*1024)
 		for {
-			n, e := terminal.Read(buf)
+			buf := terminalReadBuffers.Get().(*terminalReadBuffer)
+			n, e := terminal.Read(buf[:])
 			if n > 0 {
-				emit(clientEvent{output: append([]byte(nil), buf[:n]...)})
+				emit(clientEvent{output: buf, outputLen: n})
 				outputBytes.Add(uint64(n))
 				select {
 				case outputProgress <- struct{}{}:
 				default:
 				}
+			} else {
+				terminalReadBuffers.Put(buf)
 			}
 			if e != nil {
 				// The control stream can still have a confirmed exit in
@@ -387,6 +394,9 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		select {
 		case events <- e:
 		case <-ctx.Done():
+			if e.output != nil {
+				terminalReadBuffers.Put(e.output)
+			}
 		}
 	}
 	readAttachmentEvents(ctx, control, terminalStream, emit, inputDrained)
@@ -914,7 +924,8 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					continue
 				}
 				return 255, fmt.Errorf("connection lost; reconnect to check the shell: %w", e.err)
-			} else if len(e.output) > 0 {
+			} else if e.output != nil {
+				output := e.output[:e.outputLen]
 				if participation != nil && time.Now().After(nextObservation) {
 					seen := time.Now()
 					nextObservation = seen.Add(time.Minute)
@@ -924,21 +935,28 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					})
 				}
 				if detachPhase == awaitingDetach {
+					terminalReadBuffers.Put(e.output)
 					continue
 				}
 				if console != nil {
-					if len(console.output)+len(e.output) <= 256*1024 {
-						console.output = append(console.output, e.output...)
+					if len(console.output)+len(output) <= 256*1024 {
+						console.output = append(console.output, output...)
+						terminalReadBuffers.Put(e.output)
 						continue
 					}
 					if err := leaveConsole(); err != nil {
+						terminalReadBuffers.Put(e.output)
 						return 255, err
 					}
 				}
-				if err = writeFull(terminalOutput, e.output); err != nil {
+				err = writeFull(terminalOutput, output)
+				if err == nil {
+					outputModes.Observe(output)
+				}
+				terminalReadBuffers.Put(e.output)
+				if err != nil {
 					return 1, err
 				}
-				outputModes.Observe(e.output)
 				if err = term.SyncMouse(&outputModes); err != nil {
 					return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 				}
