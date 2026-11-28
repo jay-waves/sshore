@@ -2,13 +2,12 @@
 
 ## Local approval
 
-A program in an attached shell can request a copy, mount or port forward through `origin:`.
+A program in an attached shell can request a copy, mount or port forward through `..:`.
 The request contains bounded operation metadata and optional path or port suggestions. The
 client leaves the remote attachment and presents the request in a local approval screen.
 The screen also handles any SSH credentials needed to start a mount or forward.
-In an attached shell, use `: origin: --lf` with `cp` or `mount` to browse the host
-before requesting approval. `.:` and `here:` also select the current host.
-Use `cp origin: : --lf` to browse for the source on the client after approving.
+In an attached shell, use `.: ..: --lf` with `cp` or `mount` to browse the host
+before requesting approval. Use `cp ..: .: --lf` to browse for the source on the client after approving.
 
 File and mount requests show `Approve this request? [y/N]` before local endpoint
 selection. For a forward, the screen shows the direction and fixed remote endpoint.
@@ -47,7 +46,7 @@ It lists TCP listeners and bound UDP ports on IPv4 wildcard and loopback address
 with `/`, select a listener, and press Enter. Submit the target port to start the forward
 using the selected protocol.
 Both browsers restore the terminal before running the chosen command.
-Requests sent to `origin:` follow the same approval flow as the corresponding CLI command.
+Requests sent to `..:` follow the same approval flow as the corresponding CLI command.
 
 ## Command console
 

@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestWindowsNewReview(t *testing.T) {
+func TestWindowsLaunchReview(t *testing.T) {
 	binary := os.Getenv("SSHORE_TEST_WINDOWS_CLIENT")
 	if binary == "" {
 		t.Skip("set SSHORE_TEST_WINDOWS_CLIENT to a built executable")
@@ -43,7 +43,7 @@ func TestWindowsNewReview(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "new", "--", "vim", "a b.txt")
+	cmd := exec.CommandContext(ctx, binary, "go", "--", "vim", "a b.txt")
 	out, err := runWindowsTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 		wait(hostname)
 		wait("╰── vim")
@@ -71,7 +71,7 @@ func TestWindowsNewReview(t *testing.T) {
 	}
 }
 
-func confirmNewTerminal(send func(string), wait terminalWait) {
+func confirmLaunch(send func(string), wait terminalWait) {
 	wait("[Esc] Cancel", true)
 	send("\r")
 }
@@ -95,10 +95,10 @@ func TestWindowsProgramArguments(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	ctx, command := windowsClient(t)
-	t.Run("new without delimiter opens a shell", func(t *testing.T) {
-		out, err := runWindowsTerminal(t, ctx, command("new", "--name", "default-shell"), func(send func(string), wait terminalWait) {
-			confirmNewTerminal(send, wait)
-			wait("Connected here:default-shell")
+	t.Run("go without delimiter opens a shell", func(t *testing.T) {
+		out, err := runWindowsTerminal(t, ctx, command("go", "--name", "default-shell"), func(send func(string), wait terminalWait) {
+			confirmLaunch(send, wait)
+			wait("Connected .:default-shell")
 			send("echo DEFAULT_SHELL_READY\r")
 			wait("DEFAULT_SHELL_READY")
 			send("exit\r")
@@ -120,13 +120,13 @@ func TestWindowsProgramArguments(t *testing.T) {
 		{"less spaced file", "less.exe", []string{"xxx yyy"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"new", "--", filepath.Join(dir, tc.program)}, tc.args...)
+			args := append([]string{"go", "--", filepath.Join(dir, tc.program)}, tc.args...)
 			want, err := json.Marshal(tc.args)
 			if err != nil {
 				t.Fatal(err)
 			}
 			out, err := runWindowsTerminal(t, ctx, command(args...), func(send func(string), wait terminalWait) {
-				confirmNewTerminal(send, wait)
+				confirmLaunch(send, wait)
 				wait("PROGRAM_ARGS=" + string(want))
 				wait("Now in: calling terminal")
 			})
@@ -173,10 +173,10 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	ctx, command := windowsClient(t)
 	start := func() *exec.Cmd {
-		return command("new", "--name", "lifecycle", "--pin", "--", program, "-test.run=^TestWindowsRunFixture$", "--", "fixture-args", "", "space value", `quote"value`, `back\slash`, "--ssh", "--")
+		return command("go", "--name", "lifecycle", "--pin", "--", program, "-test.run=^TestWindowsRunFixture$", "--", "fixture-args", "", "space value", `quote"value`, `back\slash`, "--ssh", "--")
 	}
 	missing := filepath.Join(t.TempDir(), "missing.exe")
-	out, err := runWindowsTerminal(t, ctx, command("new", "--name", "lifecycle", "--", missing), confirmNewTerminal)
+	out, err := runWindowsTerminal(t, ctx, command("go", "--name", "lifecycle", "--", missing), confirmLaunch)
 	if err == nil {
 		t.Fatalf("missing executable succeeded:\n%s", out)
 	}
@@ -184,10 +184,10 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		t.Fatalf("failed launch left a task registered:\n%s", tree)
 	}
 	out, err = runWindowsTerminal(t, ctx, start(), func(send func(string), wait terminalWait) {
-		confirmNewTerminal(send, wait)
-		wait("Connected here:lifecycle")
+		confirmLaunch(send, wait)
+		wait("Connected .:lifecycle")
 		send("\x02d")
-		wait("Detached from here:lifecycle")
+		wait("Detached from .:lifecycle")
 		wait("sshore on local>", true)
 		send("exit\r")
 	})
@@ -216,7 +216,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		t.Fatalf("kill without --all should only look for a named task: %v\n%s", err, out)
 	}
 
-	out, err = runWindowsTerminal(t, ctx, start(), confirmNewTerminal)
+	out, err = runWindowsTerminal(t, ctx, start(), confirmLaunch)
 	if err == nil || !strings.Contains(out, "already") {
 		t.Fatalf("duplicate name should fail: %v\n%s", err, out)
 	}
@@ -226,9 +226,9 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	}
 
 	out, err = runWindowsTerminal(t, ctx, command("attach", "lifecycle"), func(send func(string), wait terminalWait) {
-		wait("Connected here:lifecycle")
+		wait("Connected .:lifecycle")
 		send("\x02d")
-		wait("Detached from here:lifecycle")
+		wait("Detached from .:lifecycle")
 		wait("sshore on local>", true)
 		send("exit\r")
 	})
@@ -240,7 +240,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	}
 
 	out, err = runWindowsTerminal(t, ctx, command("attach", id), func(send func(string), wait terminalWait) {
-		wait("Connected here:lifecycle")
+		wait("Connected .:lifecycle")
 		send("kept\r")
 		wait("RESUMED=kept")
 		wait("sshore on local>", true)
@@ -254,10 +254,10 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	}
 
 	out, err = runWindowsTerminal(t, ctx, start(), func(send func(string), wait terminalWait) {
-		confirmNewTerminal(send, wait)
-		wait("Connected here:lifecycle")
+		confirmLaunch(send, wait)
+		wait("Connected .:lifecycle")
 		send("\x02d")
-		wait("Detached from here:lifecycle")
+		wait("Detached from .:lifecycle")
 		wait("sshore on local>", true)
 		send("exit\r")
 	})

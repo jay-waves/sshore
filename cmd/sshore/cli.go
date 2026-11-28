@@ -114,7 +114,7 @@ func runShell(parsed cliArguments) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if parsed.command == "new" {
+	if parsed.command == "go" {
 		host := cleanText(o.host)
 		if o.local {
 			host = taskManagerLabel()
@@ -125,7 +125,7 @@ func runShell(parsed cliArguments) (int, error) {
 		}
 		confirmed, err := launch.Review()
 		if errors.Is(err, termui.ErrTerminalRequired) {
-			return 1, usage("new requires an interactive terminal")
+			return 1, usage("go requires an interactive terminal")
 		}
 		if err != nil {
 			return 1, err
@@ -204,7 +204,7 @@ func runSSHProcess(connection sshio.Options) (int, error) {
 func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 	command := parsed.command
 	o := options{command: command}
-	creating := command == "shell" || command == "new"
+	creating := command == "shell" || command == "go"
 	if creating {
 		o.command = "sh" // Shell requests use the existing protocol operation.
 	}
@@ -319,16 +319,30 @@ func executeShellCommand(o options) (int, error) {
 	return runLocalCommand(o)
 }
 
-const localEndpointPrefix = "here:"
+const localEndpointPrefix = ".:"
+const originEndpointPrefix = "..:"
+
+func formatCLIEndpoint(host, value string) string {
+	switch host {
+	case "here":
+		return localEndpointPrefix + value
+	case "origin":
+		return originEndpointPrefix + value
+	default:
+		return sshio.FormatEndpoint(host, value)
+	}
+}
 
 func splitEndpoint(value string) (host, suffix string, err error) {
 	switch {
+	case strings.HasPrefix(value, originEndpointPrefix):
+		return "origin", value[len(originEndpointPrefix):], nil
 	case strings.HasPrefix(value, "0:"):
-		return "origin", value[2:], nil
+		return "", "", usage("use ..: in place of 0: for the attached client")
 	case strings.HasPrefix(value, "::"):
-		return "", "", usage("use 0: or origin: for the attached client, or bracket an IPv6 host")
-	case strings.HasPrefix(value, ".:"):
-		return "here", value[2:], nil
+		return "", "", usage("use ..: for the attached client, or bracket an IPv6 host")
+	case strings.HasPrefix(value, localEndpointPrefix):
+		return "here", value[len(localEndpointPrefix):], nil
 	case strings.HasPrefix(value, ":"):
 		return "here", value[1:], nil
 	}
@@ -348,7 +362,7 @@ func splitEndpoint(value string) (host, suffix string, err error) {
 	}
 	separator := strings.IndexByte(address[start:], ':')
 	if separator < 0 {
-		return "", "", usage("endpoint requires a colon: use HOST:VALUE, here:VALUE or origin:VALUE")
+		return "", "", usage("endpoint requires a colon: use HOST:VALUE, .:VALUE or ..:VALUE")
 	}
 	separator += offset + start
 	if strings.ContainsAny(value[:separator], "/\\") {
@@ -361,7 +375,7 @@ func splitEndpoint(value string) (host, suffix string, err error) {
 // A colon before the first path separator qualifies a file endpoint.
 func splitFileEndpoint(value string) (string, string, error) {
 	if value == "" {
-		return "", "", usage("empty file operand; use here: to select a local path")
+		return "", "", usage("empty file operand; use .: to select a local path")
 	}
 	colon := strings.IndexByte(value, ':')
 	slash := strings.IndexAny(value, "/\\")
@@ -374,7 +388,7 @@ func splitFileEndpoint(value string) (string, string, error) {
 
 func remoteCopyRequest(parsed cliArguments) (string, []string, string, error) {
 	fail := func() (string, []string, string, error) {
-		return "", nil, "", usage("use copy here:SOURCE... origin:[PATH] or copy origin:[PATH] here:DIRECTORY")
+		return "", nil, "", usage("use copy .:SOURCE... ..:[PATH] or copy ..:[PATH] .:DIRECTORY")
 	}
 	if len(parsed.ssh) != 0 {
 		return "", nil, "", usage("remote copy requests inherit the attached connection")
@@ -446,7 +460,7 @@ func remoteMountRequest(parsed cliArguments) (operation, error) {
 		return operation{}, err
 	}
 	if sourceHost != "here" || targetHost != "origin" {
-		return operation{}, usage("use mount here:[DIRECTORY] origin:[MOUNTPOINT]")
+		return operation{}, usage("use mount .:[DIRECTORY] ..:[MOUNTPOINT]")
 	}
 	if source == "" && !parsed.has("--lf") {
 		source = "."
@@ -492,7 +506,7 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 	case "here":
 		return copyEndpoint{path: path, pick: path == "", stream: path == "-"}, nil
 	case "origin":
-		return copyEndpoint{}, usage("origin: requires an attached sshore shell")
+		return copyEndpoint{}, usage("..: requires an attached sshore shell")
 	}
 	return copyEndpoint{host: host, path: path, pick: path == ""}, nil
 }
@@ -566,7 +580,7 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 		return ftpOptions{}, err
 	}
 	if host == "here" || host == "origin" || targetHost != "here" {
-		return ftpOptions{}, usage("use mount HOST:SOURCE here:[MOUNTPOINT]")
+		return ftpOptions{}, usage("use mount HOST:SOURCE .:[MOUNTPOINT]")
 	}
 	browse := parsed.has("--lf")
 	if remote == "" && !browse {
@@ -574,7 +588,7 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 	}
 	o := ftpOptions{
 		Host: host, Remote: remote, Mountpoint: mountpoint,
-		PickRemote: browse && remote == "", PickMountpoint: browse && mountpoint == "" && parsed.operands[1] != ".:",
+		PickRemote: browse && remote == "", PickMountpoint: browse && mountpoint == "" && parsed.operands[1] != localEndpointPrefix,
 		SSH:      parsed.ssh,
 		ReadOnly: parsed.has("--read-only"), Stats: parsed.has("--stats"), DirectIO: parsed.has("--direct-io"),
 		IOTimeoutNanos: parsed.duration("--io-timeout", defaultMountIOTimeout).Nanoseconds(), StartupTimeoutNanos: parsed.duration("--startup-timeout", 0).Nanoseconds(),

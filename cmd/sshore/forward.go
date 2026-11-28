@@ -52,7 +52,7 @@ func parseForwardEndpoints(args []string, attached bool) (string, ports.Rule, er
 	if attached {
 		client = originLabel
 	} else if source == "origin" || target == "origin" {
-		return "", rule, usage("origin: requires an attached sshore shell")
+		return "", rule, usage("..: requires an attached sshore shell")
 	}
 	rule.Reverse = source == client
 	host, remotePort, localPort := source, sourcePort, targetPort
@@ -60,7 +60,7 @@ func parseForwardEndpoints(args []string, attached bool) (string, ports.Rule, er
 		host, remotePort, localPort = target, targetPort, sourcePort
 	}
 	if attached && host != "here" {
-		return "", rule, usage("forward requires one here:PORT and one origin:[PORT]")
+		return "", rule, usage("forward requires one .:PORT and one ..:[PORT]")
 	}
 	if (source == client) == (target == client) {
 		return "", rule, usage("forward requires one client endpoint and one remote endpoint")
@@ -93,8 +93,8 @@ func (f forwardConfig) direction() string {
 }
 
 func (f forwardConfig) description(client, remote string) string {
-	local := sshio.FormatEndpoint(client, strconv.Itoa(f.Rule.LocalPort))
-	host := sshio.FormatEndpoint(remote, strconv.Itoa(f.Rule.RemotePort))
+	local := formatCLIEndpoint(client, strconv.Itoa(f.Rule.LocalPort))
+	host := formatCLIEndpoint(remote, strconv.Itoa(f.Rule.RemotePort))
 	if !f.Rule.Reverse {
 		local, host = host, local
 	}

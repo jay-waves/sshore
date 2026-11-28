@@ -63,7 +63,7 @@ jobs:
           go run ./scripts go build -ldflags '-X main.version=0.0.0' -o $env:SSHORE_TEST_WINDOWS_CLIENT ./cmd/sshore
       - name: Windows CLI, installer and ConPTY integration
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: go test -tags=integration -count=1 -timeout=90s -run '^Test(CLI|WindowsConPTY|WindowsNewReview|WindowsInstallWaitsForExecutable)$' -v ./tests/integration
+        run: go test -tags=integration -count=1 -timeout=90s -run '^Test(CLI|WindowsConPTY|WindowsLaunchReview|WindowsInstallWaitsForExecutable)$' -v ./tests/integration
       - name: Configure Windows OpenSSH fixture
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         id: windows-sshd

@@ -24,7 +24,7 @@
   the resource; remote is its SSH destination. The remote account is the authenticated Unix account,
   excluding other users.
 - **Client** The sshore process interacting with the user. Each SSH login has its own client.
-- **Origin** The client side of a connection. In an attached shell, `origin:` (alias `0:`)
+- **Origin** The client side of a connection. In an attached shell, `..:` (alias `origin:`)
   addresses the attached client. For a mount or forward, the origin account owns the task.
   On the SSH host, `list` and `ps` (`pstree`) group these read-only records under `origin`.
   Each record refers to its own connection, so several clients can appear in this group.
@@ -65,7 +65,7 @@ An approved copy runs on a separate file stream. An approved mount or forward
 becomes an independent task with its own UID and name.
 Ending a source shell does not stop its independent resources.
 
-`here:` and `.:` identify the machine running the command. A remote request's path or port is an
+`.:` (alias `here:`) identifies the machine running the command. A remote request's path or port is an
 editable default in local approval.
 
 ## Identity and state

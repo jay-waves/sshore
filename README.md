@@ -48,7 +48,7 @@ sshore ping pi                # Measure SSH latency.
 sshore fwd --udp pi:53 1053   # Forward a remote DNS service to local port 1053.
 ```
 
-Run `sshore fwd :9090 origin:9091` from an attached remote shell to request
+Run `sshore fwd .:9090 ..:9091` from an attached remote shell to request
 forwarding its port 9090 to port 9091 on the client. Approve it on the client.
 
 ### ssh-exec
@@ -61,15 +61,15 @@ sshore sh pi -- uname -a
 sshore sh pi -- 'ls -l "a b.txt"'
 ```
 
-### new — Start a program in a terminal
+### go — Start a shell or program in a terminal
 
-`sshore new HOST -- PROGRAM [ARG...]` preserves each argument and opens a
-launch review before starting the program in a PTY. Use `--pin` to keep the
-task running after disconnect.
+`sshore go HOST -- PROGRAM [ARG...]` preserves each argument and opens a
+launch review before starting the program in a PTY. `embark` is an alias for
+`go`. Use `--pin` to keep the task running after disconnect.
 
 ```sh
-sshore new pi -- vim 'a b.txt'  # Open one file whose name contains a space.
-sshore new pi --pin            # Open a shell that survives disconnect.
+sshore go pi -- vim 'a b.txt'  # Open one file whose name contains a space.
+sshore go pi --pin            # Open a shell that survives disconnect.
 ```
 
 ## mux — Start, detach and resume
@@ -133,16 +133,17 @@ account's `~/.ssh/authorized_keys`. Existing entries keep their restrictions.
 sshore cp report.zip pi:/tmp/           # Upload a file.
 sshore cp pi:/tmp/report.zip ./         # Download a file.
 sshore cp -r ./project pi:/tmp/         # Upload a directory tree.
-sshore cp --lf : pi:                   # Pick both paths.
-sshore cp report.zip origin:                    # Send to the client from an attached shell.
+sshore cp --lf .: pi:                  # Pick both paths.
+sshore cp report.zip ..:              # Send to the client from an attached shell.
 ```
 
-A bare path belongs to the machine running the command. Use `:` or `here:`
-for an explicit local endpoint. An empty local path uses the current directory
+A bare path belongs to the machine running the command. Use `.:` for an
+explicit local endpoint. An empty local path uses the current directory
 and an empty SSH path uses the remote home. Add `--lf` to pick omitted paths.
 Recursive copy includes empty directories, rejects symbolic links, and keeps
-existing files. `origin:` refers to the attached client and requests its approval.
-On Windows, use `C:\dir\file` or `here:C:/dir/file` for a local drive path.
+existing files. `..:` refers to the attached client and requests its approval.
+`here:` and `origin:` are aliases for `.:` and `..:`, respectively.
+On Windows, use `C:\dir\file` or `.:C:/dir/file` for a local drive path.
 
 ## sftp (+fuse) — Mount a remote directory locally
 
@@ -150,7 +151,7 @@ On Windows, use `C:\dir\file` or `here:C:/dir/file` for a local drive path.
 sshore mount pi:/srv/project .: --read-only
 sshore mount winhost:E:/project .:
 sshore mount pi: :
-sshore mount --lf pi: here:
+sshore mount --lf pi: :
 ```
 
 An empty remote path mounts the remote home and an empty local mountpoint
@@ -202,7 +203,7 @@ the listening port. Some process names may require administrator privileges.
 ## Advanced usage
 
 - Use `-J` to connect through a jump host, as in
-  `sshore new pi -J jump -- nvim`.
+  `sshore go pi -J jump -- nvim`.
 - Use `-` to pipe a single file over SSH. Upload to a new remote filename with
   `gzip -c report.txt | sshore cp - pi:/tmp/report.txt.gz`, or download with
   `sshore cp pi:/tmp/report.txt.gz - | gzip -dc`.

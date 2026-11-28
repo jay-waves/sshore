@@ -25,7 +25,7 @@ func TestShellCgroup(t *testing.T) {
 	start := func(name string) (string, string) {
 		t.Helper()
 		marker := filepath.Join(t.TempDir(), "group")
-		endpoint := "here:" + name
+		endpoint := ".:" + name
 		cmd := exec.CommandContext(ctx, binary, "sh", "--name", name, "--pin", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)

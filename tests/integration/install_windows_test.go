@@ -48,7 +48,7 @@ func TestWindowsInstallWaitsForExecutable(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	cmd := exec.CommandContext(ctx, binary, "install", "--apply", "here:"+target)
+	cmd := exec.CommandContext(ctx, binary, "install", "--apply", ".:"+target)
 	done := make(chan struct{})
 	var output []byte
 	var installErr error

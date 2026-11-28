@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/jay-waves/sshore/internal/files"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 	sftp "github.com/pkg/sftp/v2"
@@ -19,7 +18,7 @@ import (
 type browseLocation struct{ host, dir string }
 
 func (loc browseLocation) endpoint() string {
-	return sshio.FormatEndpoint(loc.host, loc.dir)
+	return formatCLIEndpoint(loc.host, loc.dir)
 }
 
 func parseBrowseLocations(a cliArguments) (source, peer browseLocation, err error) {
@@ -47,7 +46,7 @@ func parseBrowseLocations(a cliArguments) (source, peer browseLocation, err erro
 		}
 		attached := os.Getenv("SSHORE_SOCKET") != ""
 		if attached != (peer.host == "origin") {
-			return source, peer, usage("%s pairs use here: and origin: inside an attached shell, or here: and an SSH host outside it", a.command)
+			return source, peer, usage("%s pairs use .: and ..: inside an attached shell, or .: and an SSH host outside it", a.command)
 		}
 	}
 	if source.host == "origin" {
@@ -105,7 +104,7 @@ func runFileBrowser(a cliArguments) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	source := sshio.FormatEndpoint(loc.host, selected)
+	source := formatCLIEndpoint(loc.host, selected)
 	switch action {
 	case 's':
 		if loc.host == "here" {
@@ -113,7 +112,7 @@ func runFileBrowser(a cliArguments) (int, error) {
 		}
 		// Windows SFTP exposes drive paths with a leading slash.
 		if windowsHost && len(selected) > 3 && selected[0] == '/' && selected[2] == ':' && selected[3] == '/' {
-			source = sshio.FormatEndpoint(loc.host, selected[1:])
+			source = formatCLIEndpoint(loc.host, selected[1:])
 		}
 		return browseCommand("shell", a.ssh, source)
 	case 'm':

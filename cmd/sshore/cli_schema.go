@@ -412,7 +412,7 @@ func parseStartupDestination(ref string) (taskSelector, string, error) {
 	if err != nil {
 		return taskSelector{}, "", err
 	}
-	if !shell.ValidStartupPath(path) {
+	if path != "" && !shell.ValidStartupPath(path) {
 		return taskSelector{}, "", usage("invalid startup path %q; use an absolute path, ./ or ../; use --name for a task name", path)
 	}
 	target, err := scopedTaskAccount(host)
@@ -475,7 +475,7 @@ func scopedTaskAccount(host string) (taskSelector, error) {
 	case "here":
 		return taskSelector{}, nil
 	case "origin":
-		return taskSelector{}, usage("select here: or an SSH host")
+		return taskSelector{}, usage("select .: or an SSH host")
 	}
 	return taskSelector{scope: taskSSH, host: host}, nil
 }
@@ -501,6 +501,8 @@ In a session: Ctrl+B c opens a nested shell; d pins and detaches; r redraws.
 Ctrl+B a attaches the latest eligible session; s or : opens the command prompt.
 Examples: sshore --tldr             Details: sshore COMMAND --help
 Version: sshore --version
+Endpoints: .: selects this machine; ..: selects the attached client.
+Endpoint aliases: here: for .: and origin: for ..:.
 `
 
 const sshOptions = `
@@ -521,8 +523,9 @@ ProxyCommand are unsupported.
 const connectionOptions = `  --no-escape           Disable Ctrl+B shortcuts
 `
 
-const startupLocationHelp = `Use HOST:PATH or here:PATH for a startup directory. PATH must be absolute
-or start with ./ or ../. Quote paths that contain spaces.
+const startupLocationHelp = `HOST and HOST: use the host's default startup directory. Use .: for
+the local default. To select a directory, use HOST:PATH or .:PATH.
+PATH must be absolute or start with ./ or ../. Quote paths that contain spaces.
 
   --name NAME           Set a name for the new session
 `
@@ -581,11 +584,11 @@ choose one in the terminal with Tab completion.
 		"install": {
 			run: runInstall, group: groupAccount, summary: "Install the local sshore client",
 			max: 1, flags: []string{"--apply"},
-			help: `Usage: sshore install [here:[PATH]]
+			help: `Usage: sshore install [.:[PATH]]
 
 Install the latest client release. Review running tasks before replacement.
 Installation preserves settings and history. Use kill --all --reset to clear state.
-Run outside managed shells. Use here:PATH to specify an absolute executable path.
+Run outside managed shells. Use .:PATH to specify an absolute executable path.
 `,
 			examples: "Install the latest client release\n  sshore install\n",
 		},
@@ -605,7 +608,7 @@ the intervals.
 		"shell": {
 			run: runShell, selector: cliStartupSelector, group: groupShell, summary: "Start a shell or execute a command over SSH", aliases: []string{"sh"},
 			ssh: true, max: 1, flags: strings.Fields(terminalStartupFlags),
-			help: `Usage: sshore shell [HOST[:PATH]] [--name NAME] [options] [--ssh SSH_OPTIONS...]
+			help: `Usage: sshore shell [HOST[:[PATH]]] [--name NAME] [options] [--ssh SSH_OPTIONS...]
 
        sshore shell HOST [--ssh SSH_OPTIONS...] -- COMMAND [ARG...]
 
@@ -621,10 +624,12 @@ a remote PTY or sshore installation. Standard streams and exit status pass throu
 ` + startupLocationHelp + shellStartupOptions + connectionOptions + shellConnectionHelp,
 			examples: "Open a remote shell\n  sshore sh work --name build\nOpen a local shell\n  sshore sh --name build\n",
 		},
-		"new": {
-			run: runShell, selector: cliStartupSelector, group: groupShell, summary: "Start a terminal for a shell or program",
+		"go": {
+			run: runShell, selector: cliStartupSelector, group: groupShell, summary: "Start a shell or program in a managed terminal", aliases: []string{"embark"},
 			ssh: true, program: true, max: 1, flags: strings.Fields(terminalStartupFlags),
-			help: `Usage: sshore new [HOST[:PATH]] [--name NAME] [options] [--ssh SSH_OPTIONS...] [-- PROGRAM [ARG...]]
+			help: `Usage: sshore go [HOST[:[PATH]]] [--name NAME] [options] [--ssh SSH_OPTIONS...] [-- PROGRAM [ARG...]]
+
+Alias: embark
 
 Omit -- to open an interactive shell. The task ends with its starting connection
 or parent shell unless started with --pin or explicitly detached.
@@ -636,7 +641,7 @@ Inside a managed session, the command returns the result of handing off the
 terminal. Control returns to the parent terminal when the child ends or detaches.
 
 ` + startupLocationHelp + shellStartupOptions + connectionOptions + shellConnectionHelp,
-			examples: "Open a shell\n  sshore new work\nKeep an editor running after disconnect\n  sshore new work:/srv/project --name editor --pin -- nvim .\n",
+			examples: "Open a shell\n  sshore go work\nKeep an editor running after disconnect\n  sshore go work:/srv/project --name editor --pin -- nvim .\n",
 		},
 		"attach": {
 			run: runTargetCommand, selector: cliAttachSelector, group: groupShell, summary: "Resume a detached session", aliases: []string{"a"},
@@ -713,10 +718,10 @@ requires confirmation. Run local reset outside managed shells.
 Alias: cp
 
 A bare path belongs to the machine running this command. Use HOST:PATH
-for an SSH host. Use here: or .: for an explicit local endpoint.
-In an attached remote shell, origin: or 0: requests local approval.
-Use : (also .: or here:) and --lf to browse on the host before sending to
-origin. Use origin: as an empty source with --lf to browse during approval.
+for an SSH host. Use .: for an explicit local endpoint.
+In an attached remote shell, ..: selects the attached client and requests its approval.
+Use .: and --lf to browse on the host before sending to the client.
+Use ..: as an empty source with --lf to browse during approval.
 An empty local path uses the current directory and an empty SSH path uses the
 remote home. An empty source selects a directory and requires -r unless you
 use --lf to browse. Use - for standard input or output
@@ -724,11 +729,11 @@ with an explicit file.
 Copy accepts up to 16 source arguments. Multiple sources require a destination directory.
 Use -r to copy directories over SSH, including empty directories. Recursive
 copy rejects symbolic links and does not overwrite existing files.
-Recursive copy requires filesystem paths. With origin:, approval is per directory.
+Recursive copy requires filesystem paths. With ..:, approval is per directory.
 
   sshore copy report.zip work:/tmp/
   sshore cp -r ./project work:/tmp/
-  sshore copy here: work:
+  sshore copy .: work:
   sshore copy work:/tmp/report.txt -
   sshore copy - work:/tmp/report.txt
 
@@ -747,7 +752,7 @@ Use a different SSH port
 			run: runMount, group: groupSSH, summary: "Mount a remote directory", aliases: []string{"mnt"},
 			ssh: true, min: 2, max: 2, flags: strings.Fields("--read-only --io-timeout --startup-timeout --stats --direct-io --lf"),
 			help: `Usage: sshore mount HOST:SOURCE MOUNTPOINT [options] [--ssh SSH_OPTIONS...]
-       sshore mount here:[DIRECTORY] origin:[MOUNTPOINT] [--read-only]
+       sshore mount .:[DIRECTORY] ..:[MOUNTPOINT] [--read-only]
 
 Mount a remote directory over SFTP. The client deploys and starts a remote
 helper with the same release version.
@@ -770,8 +775,8 @@ Options:
   --stats                      Report request and cache statistics
   --direct-io                  Disable kernel read caching (Linux)
 
-From a remote shell, origin: and 0: select the attached client.
-Use : (also .: or here:) as the source with --lf to browse on the host.
+From an attached remote shell, ..: selects the attached client.
+Use .: as the source with --lf to browse on the host.
 Approve the request on the attached client and choose a mountpoint.
 If the filesystem reports a busy mount, close files and retry sshore kill TASK.
 Request timeouts close the whole mount connection;
@@ -791,13 +796,13 @@ on Apple Silicon Macs (experimental).
 		"lf": {
 			run: runFileBrowser, group: groupSSH, ssh: true, max: 2,
 			summary:  "Browse files and open a shell, copy or mount",
-			help:     "Usage: sshore lf [HOST | SOURCE PEER] [options]\n\nBrowse the current directory or the given host's home. Press s to open a shell.\nPress o to open a local file or directory with the system default app.\nUse l to enter a directory or open a local file, e for EDITOR and i for PAGER.\nPress y to copy the selected path.\nWith two endpoints, browse the first and use c to copy or m to mount.\nUse : for the local side and HOST:[PATH] for the SSH side. In an attached\nshell, use origin: as the second endpoint to request approval. q quits.\n" + sshOptions,
+			help:     "Usage: sshore lf [HOST | SOURCE PEER] [options]\n\nBrowse the current directory or the given host's home. Press s to open a shell.\nPress o to open a local file or directory with the system default app.\nUse l to enter a directory or open a local file, e for EDITOR and i for PAGER.\nPress y to copy the selected path.\nWith two endpoints, browse the first and use c to copy or m to mount.\nUse .: for the local side and HOST:[PATH] for the SSH side. In an attached\nshell, use ..: as the second endpoint to request approval. q quits.\n" + sshOptions,
 			examples: "Browse the current directory\n  sshore lf\nBrowse a remote project and operate on it locally\n  sshore lf work:/srv/project :\nCopy a local selection to an SSH host\n  sshore lf : work:\n",
 		},
 		"lp": {
 			run: runPortBrowser, group: groupSSH, ssh: true, max: 2,
 			summary:  "Browse TCP and UDP ports and forward a service",
-			help:     "Usage: sshore lp [HOST | SOURCE TARGET] [options]\n\nBrowse TCP listeners by default. Press u for UDP or t for TCP.\nThe header shows whether the browsing account is running as administrator.\nUse / to filter, r to refresh, s to switch port/process sort, and y to copy the address.\nWith two endpoints, press Enter on a listener to choose the destination port.\nUse : for the local side and HOST: for the SSH side. In an attached shell,\nuse origin: as the second endpoint to request approval. q quits.\n" + sshOptions,
+			help:     "Usage: sshore lp [HOST | SOURCE TARGET] [options]\n\nBrowse TCP listeners by default. Press u for UDP or t for TCP.\nThe header shows whether the browsing account is running as administrator.\nUse / to filter, r to refresh, s to switch port/process sort, and y to copy the address.\nWith two endpoints, press Enter on a listener to choose the destination port.\nUse .: for the local side and HOST: for the SSH side. In an attached shell,\nuse ..: as the second endpoint to request approval. q quits.\n" + sshOptions,
 			examples: "Browse services on an SSH host\n  sshore lp work\nBrowse remote services and forward one to a local port\n  sshore lp work: :\n",
 		},
 		"forward": {
@@ -807,7 +812,7 @@ on Apple Silicon Macs (experimental).
 
 Mirror the service at SOURCE on TARGET. Use a bare port for the current machine
 and HOST:PORT for an SSH host. Use : to use the same port on the local machine.
-From a remote shell, use origin: or 0: for the attached client and request local approval.
+From an attached remote shell, use ..: for the attached client and request its approval.
 The account daemon manages the forward. Use sshore kill ID to stop it.
 
   sshore forward work:3000 8080

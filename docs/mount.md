@@ -18,7 +18,7 @@
   closed. If the worker stops responding during shutdown, the daemon terminates
   that worker.
 - Direct mounts use sibling data and optional notification channels on one SSH
-  connection. An `origin:` request first goes through [local approval](approval.md).
+  connection. An `..:` request first goes through [local approval](approval.md).
   The approved route binds the remote directory and access mode to the original
   detached shell. The resulting resource owns its connection and can outlive that shell.
   Approved mounts carry data and notifications in separate smux streams.

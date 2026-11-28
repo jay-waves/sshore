@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
 	xterm "golang.org/x/term"
@@ -250,7 +249,7 @@ func rootConsoleOptions(current options, command cliArguments) (*options, error)
 		return nil, err
 	}
 	if !next.local {
-		return nil, usage("use shell [here:PATH] [--name NAME] to open a shell on this host")
+		return nil, usage("use shell [.:PATH] [--name NAME] to open a shell on this host")
 	}
 	next.environment, next.noEscape = current.environment, current.noEscape
 	return &next, nil
@@ -285,7 +284,7 @@ func formatSessionEnd(ended sessionEnd, current options, destination string) str
 			}
 		}
 		name := taskDisplayID(shortTaskObservation(taskKey(child.Instance)), child.Name, false)
-		endpoint := sshio.FormatEndpoint(host, name)
+		endpoint := formatCLIEndpoint(host, name)
 		pin := "pinned indefinitely"
 		if !child.PinUntil.IsZero() {
 			pin = "pinned until " + child.PinUntil.Local().Format(time.DateTime)

@@ -14,18 +14,22 @@ import (
 func runInstall(parsed cliArguments) (int, error) {
 	var target string
 	if len(parsed.operands) != 0 {
-		var local bool
-		target, local = strings.CutPrefix(parsed.operands[0], "here:")
-		if !local {
-			return 2, usage("install applies to this machine; use here: or here:PATH")
+		ref := parsed.operands[0]
+		host, path, err := splitEndpoint(ref)
+		if err != nil {
+			return 2, err
 		}
+		if host != "here" || strings.HasPrefix(ref, ":") {
+			return 2, usage("install applies to this machine; use .: or .:PATH")
+		}
+		target = path
 	}
 	if target != "" && (!filepath.IsAbs(target) || strings.ContainsAny(target, "\x00\r\n")) {
 		return 2, usage("installation path must be absolute and contain no line breaks")
 	}
 	apply := parsed.has("--apply")
 	if apply && target == "" {
-		return 2, usage("applying a prepared release requires here:PATH")
+		return 2, usage("applying a prepared release requires .:PATH")
 	}
 	if err := requireLocalMaintenance("install"); err != nil {
 		return 1, err

@@ -6,7 +6,6 @@ import (
 	"errors"
 
 	"github.com/jay-waves/sshore/internal/ports"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -53,7 +52,7 @@ func runPortBrowser(a cliArguments) (int, error) {
 	if _, err = parsePort(dest); err != nil {
 		return 2, err
 	}
-	args := []string{sshio.FormatEndpoint(loc.host, port), sshio.FormatEndpoint(peer.host, dest)}
+	args := []string{formatCLIEndpoint(loc.host, port), formatCLIEndpoint(peer.host, dest)}
 	if udp {
 		args = append(args, "--udp")
 	}

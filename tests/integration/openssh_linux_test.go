@@ -426,7 +426,7 @@ Match command "printf forwarding-check"
 			t.Fatal(err)
 		}
 		upgrade := func(answer string) ([]byte, error) {
-			cmd := exec.CommandContext(ctx, newer, "install", "--apply", "here:"+installed)
+			cmd := exec.CommandContext(ctx, newer, "install", "--apply", ".:"+installed)
 			cmd.Stdin = strings.NewReader(answer + "\n")
 			return cmd.CombinedOutput()
 		}
@@ -871,7 +871,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			if _, err := os.Stat(declined); !os.IsNotExist(err) {
 				t.Fatalf("declined copy created the destination: %v", err)
 			}
-			send("sshore cp here:approval-source 0:" + approved + "\n")
+			send("sshore cp .:approval-source ..:" + approved + "\n")
 			wait("Approve this request? [y/N]", true)
 			send("y\r")
 			wait("Save as:", true)
@@ -891,7 +891,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		cmd := command(ctx, "sh", host, "--name", "tree-copy", "--no-profile")
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + host + ":tree-copy")
-			send("sshore cp -r here:tree-source origin:" + dest + "\n")
+			send("sshore cp -r .:tree-source ..:" + dest + "\n")
 			wait("Approve this request?", true)
 			send("y\r")
 			wait("Save directory as:", true)
@@ -900,7 +900,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			wait("Connected " + host + ":tree-copy")
 			requireFile(t, filepath.Join(dest, "file"), "payload")
 			// The resumed attachment can receive another approval as soon as it accepts input.
-			send("sshore cp -r origin:" + dest + " here:tree-target\n")
+			send("sshore cp -r ..:" + dest + " .:tree-target\n")
 			wait("Approve this request?", true)
 			send("y\r")
 			wait("Local directory to upload:", true)
@@ -931,7 +931,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			send("mkdir -p approval-picker-source && cd approval-picker-source && printf 'from host' > remote-picker-file && printf 'picker-%s\\n' ready\n")
 			wait("picker-ready")
 			for i, empty := range []string{":", ".:", "here:"} {
-				send("sshore cp " + empty + " origin: --lf\n")
+				send("sshore cp " + empty + " ..: --lf\n")
 				wait("Choose files to send to origin", true)
 				wait("remote-picker-file", true)
 				send("\r")
@@ -944,7 +944,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 				wait("Connected " + endpoint)
 				requireFile(t, dest, "from host")
 
-				send("sshore mount " + empty + " 0: --lf --read-only\n")
+				send("sshore mount " + empty + " ..: --lf --read-only\n")
 				wait("Choose directory to mount", true)
 				wait("Enter Choose current dir", true)
 				send("\r")
@@ -970,7 +970,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 				wait("Connected " + endpoint)
 				requireFile(t, filepath.Join(point, "remote-picker-file"), "from host")
 			}
-			send("sshore cp origin: : --lf\n")
+			send("sshore cp ..: .: --lf\n")
 			wait("Approve this request? [y/N]", true)
 			send("y\r")
 			wait("Choose source to upload", true)
@@ -1014,10 +1014,10 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		parent := exec.CommandContext(ctx, binary, "sh", "--name", "approval-parent", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
-			wait("Connected here:approval-parent")
+			wait("Connected .:approval-parent")
 			send("sshore sh " + host + " --name approval-return --no-profile --ssh -F " + quote(config) + "\n")
 			wait("Connected " + endpoint)
-			send("printf '%s\\n' \"$$\" > approval-lifecycle/shell.pid && sshore mount here:approval-lifecycle 0: --read-only\n")
+			send("printf '%s\\n' \"$$\" > approval-lifecycle/shell.pid && sshore mount .:approval-lifecycle ..: --read-only\n")
 			wait("Approve this request? [y/N]", true)
 			send("y\r")
 			wait("Mountpoint (.: automatic):", true)
@@ -1025,7 +1025,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			wait("Started mount/")
 			wait("Connected " + endpoint)
 			prompt := "Local target port (Enter to approve, Ctrl-C to cancel):"
-			send("sshore fwd here:" + port + " origin:\n")
+			send("sshore fwd .:" + port + " ..:\n")
 			wait(prompt+" "+port, true)
 			send("\x03")
 			wait("approval cancelled")
@@ -1035,20 +1035,20 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 				t.Fatalf("declined forward left its listener active: %v", err)
 			}
 			probe.Close()
-			send("sshore fwd 0:" + localPort + " .:" + port + "\n")
+			send("sshore fwd ..:" + localPort + " .:" + port + "\n")
 			wait("Local source port (Enter to approve, Ctrl-C to cancel):", true)
 			send("\r")
-			failed := wait("forward startup failed (origin:" + localPort + " -> " + host + ":" + port + ")")
+			failed := wait("forward startup failed (..:" + localPort + " -> " + host + ":" + port + ")")
 			if !strings.Contains(failed, "remote listener: listen tcp4 127.0.0.1:"+port) {
 				t.Fatalf("unexpected bind error: %s", failed)
 			}
 			wait("Connected " + endpoint)
 			// The requesting shell can suggest a port. The origin user owns the
 			// listener and may replace that suggestion without changing the remote service.
-			send("sshore fwd here:" + port + " origin:" + port + "\n")
+			send("sshore fwd .:" + port + " ..:" + port + "\n")
 			wait(prompt, true)
 			send("\x15" + localPort + "\r")
-			if line := wait("Started forward/"); !strings.Contains(line, host+":"+port+" -> origin:"+localPort) {
+			if line := wait("Started forward/"); !strings.Contains(line, host+":"+port+" -> ..:"+localPort) {
 				t.Fatalf("unexpected forward mapping: %s", line)
 			}
 			wait("Connected " + endpoint)
@@ -1075,7 +1075,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		}
 		mountID := resourceID(point)
 		defer local(t, ctx, "kill", mountID)
-		forwardID := resourceID("origin:" + localPort)
+		forwardID := resourceID("..:" + localPort)
 		go func() {
 			c, err := listener.Accept()
 			if err == nil {
@@ -1131,7 +1131,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			setConfig(encrypted)
-			send("sshore fwd here:9090 origin:9091\n")
+			send("sshore fwd .:9090 ..:9091\n")
 			wait("Local target port (Enter to approve, Ctrl-C to cancel):", true)
 			send("\r")
 			wait(credential, true)
@@ -1217,7 +1217,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			case "origin":
 				out, err = runTerminal(t, ctx, command(ctx, "sh", host, "--no-profile"), func(send func(string), wait terminalWait) {
 					wait("Connected " + host + ":")
-					send("sshore fwd --udp " + source + " origin:" + port + "\n")
+					send("sshore fwd --udp " + source + " ..:" + port + "\n")
 					wait("UDP service", true)
 					wait("Enter to approve", true)
 					send("\r")
@@ -1238,11 +1238,19 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			}
 			checkUDPExchange(t, service, dest)
 			local(t, ctx, "kill", name)
-			again, err := net.ListenUDP("udp4", dest)
-			if err != nil {
-				t.Fatalf("stopped %s retained its UDP port: %v", mode, err)
+			// For a reverse forward the remote listener closes after it sees the SSH channel close.
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				again, err := net.ListenUDP("udp4", dest)
+				if err == nil {
+					again.Close()
+					break
+				}
+				if !errors.Is(err, unix.EADDRINUSE) || time.Now().After(deadline) {
+					t.Fatalf("stopped %s retained its UDP port: %v", mode, err)
+				}
+				time.Sleep(20 * time.Millisecond)
 			}
-			again.Close()
 		}
 	})
 	scenario("reverse forward relays data", func(t *testing.T, ctx context.Context) {
@@ -1279,7 +1287,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		}
 		// On the SSH host the same forward is visible from its origin connection.
 		remoteList := remoteCLI(t, ctx, "list")
-		if !strings.Contains(remoteList, "HOST  origin") || !strings.Contains(remoteList, "origin:"+localPort+" -> here:"+remotePort) {
+		if !strings.Contains(remoteList, "HOST  origin") || !strings.Contains(remoteList, "..:"+localPort+" -> .:"+remotePort) {
 			t.Fatalf("forward on SSH host: %s", remoteList)
 		}
 		tree := remoteCLI(t, ctx, "ps")
@@ -1609,7 +1617,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		const name = "program-inventory"
 		const argument = "private fixture argument"
 		cleanRemote(t, host+":"+name)
-		cmd := command(ctx, "new", host, "--name", name, "--", "/bin/sh", "-c",
+		cmd := command(ctx, "go", host, "--name", name, "--", "/bin/sh", "-c",
 			"read -r start; printf 'ARG=%s\\n' \"$1\"; read -r reply; exit 23", "fixture", argument)
 		out, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("[Esc] Cancel", true)
@@ -1847,7 +1855,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		const report = "printf 'BUILD_%s=%s:%s:%.6s\\n' state \"$$\" \"$SSHORE_BUILD\" \"$SSHORE_SOCKET\"\n"
 		var recorded string
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
-			wait("Connected here:dev")
+			wait("Connected .:dev")
 			send("sshore shell " + host + " --name build --no-profile --no-login --ssh -F " + quote(config) + "\n")
 			wait("Connected " + child)
 			send("export SSHORE_BUILD=retained; " + report)
@@ -1873,7 +1881,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			send("\x02\x02d")
 			wait("Detached from " + child)
 			send("exit\n")
-			wait("Exited here:dev")
+			wait("Exited .:dev")
 			wait("No shell attached.")
 			send("exit\r")
 		})
@@ -1922,7 +1930,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		parent := exec.CommandContext(ctx, binary, "sh", "--name", "panel-dev", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
-			wait("Connected here:panel-dev")
+			wait("Connected .:panel-dev")
 			send("sshore sh " + host + " --name nested-build --no-profile --no-login --ssh -F " + quote(config) + "\n")
 			wait("Connected " + build)
 			send("sshore sh --name saved-child --no-profile --no-login\n")
@@ -1953,7 +1961,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		var uid string
 		cmd := exec.CommandContext(ctx, binary, "sh", "--name", "stream-owner", "--pin", "--no-profile")
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
-			wait("Connected here:stream-owner")
+			wait("Connected .:stream-owner")
 			send("printf 'STREAM_%s=%s\\n' id \"$SSHORE_LOCAL_SESSION\"\n")
 			_, identity, _ := strings.Cut(ansi.Strip(wait("STREAM_id=")), "STREAM_id=")
 			uid = strings.TrimPrefix(strings.TrimSpace(identity), "task:")
@@ -2073,7 +2081,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		t.Helper()
 		var id string
 		runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, binary, "sh", "--name", name, "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
-			wait("Connected here:" + name)
+			wait("Connected .:" + name)
 			send("printf 'LOCAL_%s=%s\\n' session \"$SSHORE_LOCAL_SESSION\"\r")
 			line := strings.TrimSpace(ansi.Strip(wait("LOCAL_session=task:")))
 			_, id, _ = strings.Cut(line, "LOCAL_session=task:")
@@ -2122,7 +2130,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			shell := exec.CommandContext(ctx, binary, "sh", "--name", "signal-test", "--pin", "--no-profile")
 			shell.Env = append(shell.Environ(), "SSHORE_SIGNAL_TEST_PIDFILE="+pidFile)
 			runOpenSSHTerminal(t, ctx, shell, func(send func(string), wait terminalWait) {
-				wait("Connected here:signal-test")
+				wait("Connected .:signal-test")
 				send("printf '%s' \"$$\" > \"$SSHORE_SIGNAL_TEST_PIDFILE\"; printf 'shell-%s\\n' ready\r")
 				wait("shell-ready")
 				send("\x02d")
