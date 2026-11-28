@@ -19,8 +19,8 @@ func runInstall(parsed cliArguments) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		if host != "here" || strings.HasPrefix(ref, ":") {
-			return 2, usage("install applies to this machine; use .: or .:PATH")
+		if host != "here" {
+			return 2, usage("install applies to this machine; use : or :PATH")
 		}
 		target = path
 	}
@@ -29,7 +29,7 @@ func runInstall(parsed cliArguments) (int, error) {
 	}
 	apply := parsed.has("--apply")
 	if apply && target == "" {
-		return 2, usage("applying a prepared release requires .:PATH")
+		return 2, usage("applying a prepared release requires :PATH")
 	}
 	if err := requireLocalMaintenance("install"); err != nil {
 		return 1, err

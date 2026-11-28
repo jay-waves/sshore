@@ -46,7 +46,7 @@ func parseBrowseLocations(a cliArguments) (source, peer browseLocation, err erro
 		}
 		attached := os.Getenv("SSHORE_SOCKET") != ""
 		if attached != (peer.host == "origin") {
-			return source, peer, usage("%s pairs use .: and ..: inside an attached shell, or .: and an SSH host outside it", a.command)
+			return source, peer, usage("%s pairs use : and :: inside an attached shell, or : and an SSH host outside it", a.command)
 		}
 	}
 	if source.host == "origin" {

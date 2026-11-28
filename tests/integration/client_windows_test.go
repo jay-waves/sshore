@@ -103,9 +103,9 @@ func TestWindowsConPTY(t *testing.T) {
 			return command("shell", "--name", name, "--pin", "--no-profile")
 		}
 		if out, err := runWindowsTerminal(t, ctx, start("panel-target"), func(send func(string), wait terminalWait) {
-			wait("Connected .:panel-target", true)
+			wait("Connected :panel-target", true)
 			send("\x02d")
-			wait("Detached from .:panel-target")
+			wait("Detached from :panel-target")
 			wait("sshore on local>", true)
 			send("exit\r")
 		}); err != nil {
@@ -125,24 +125,24 @@ func TestWindowsConPTY(t *testing.T) {
 		}
 		id := taskID("panel-target")
 		if out, err := runWindowsTerminal(t, ctx, start("panel-source"), func(send func(string), wait terminalWait) {
-			wait("Connected .:panel-source", true)
+			wait("Connected :panel-source", true)
 			parentID := taskID("panel-source")
 			send("\x02a")
-			wait("\x1b]0;sshore: .:panel-target\a", true)
+			wait("\x1b]0;sshore: :panel-target\a", true)
 			send("\x02s")
 			wait("sshore on local>", true)
 			// Selecting the parent returns to its live shell. Selecting the detached
 			// root by ID creates a new switch, which ends when that shell exits.
 			send("attach " + parentID + "\r")
-			wait("\x1b]0;sshore: .:panel-source\a", true)
+			wait("\x1b]0;sshore: :panel-source\a", true)
 			send("\x02s")
 			wait("sshore on local>", true)
 			send("pstree\r")
 			wait("shell/" + parentID + "* (panel-source)")
 			send(id + "\r")
-			wait("\x1b]0;sshore: .:panel-target\a", true)
+			wait("\x1b]0;sshore: :panel-target\a", true)
 			send("exit\r")
-			wait("\x1b]0;sshore: .:panel-source\a", true)
+			wait("\x1b]0;sshore: :panel-source\a", true)
 			send("exit\r")
 			wait("sshore on local>", true)
 			send("exit\r")
@@ -152,7 +152,7 @@ func TestWindowsConPTY(t *testing.T) {
 	})
 	t.Run("confirmed shutdown", func(t *testing.T) {
 		ctx, command := windowsClient(t)
-		const endpoint = ".:shutdown"
+		const endpoint = ":shutdown"
 		out, err := runWindowsTerminal(t, ctx, command("shell", "--name", "shutdown", "--no-profile"), func(_ func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			stop := command("kill", "--all")
@@ -182,7 +182,7 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 		}
 	}
 	directory := t.TempDir()
-	const endpoint = ".:conpty"
+	const endpoint = ":conpty"
 	run(command("shell", "--name", "conpty", "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
 		wait("Connected " + endpoint)
 		send("set \"SSHORE_RESUME=retained\"\r")

@@ -90,7 +90,10 @@ func (s *shellTask) requestApproval(c net.Conn, m message) error {
 				return fmt.Errorf("source attachment changed")
 			}
 			s.mu.Lock()
-			s.resourceApproval = resourceApproval{id: id, operations: m.Operations}
+			s.resourceApproval = resourceApproval{
+				id: id, operations: m.Operations,
+				mirroredBatch: m.Operations[0].Kind == "forward" && len(m.Operations) > 1,
+			}
 			s.mu.Unlock()
 			return nil
 		})

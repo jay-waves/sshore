@@ -218,11 +218,12 @@ function Install-Sshore([string]$Version = '', [string]$Path = '') {
         if ((Read-SshoreBinaryVersion $payload) -cne "sshore $Version") {
             throw 'Binary version does not match release; installation unchanged.'
         }
-        # Older published targets expose the same apply operation as bootstrap.
+        # Select the staged binary's CLI, including for pinned older releases.
         $commands = & $payload --help
         if ($LASTEXITCODE -ne 0) { throw 'Could not read the staged client help.' }
         $action = if ($commands -match '^\s+install\s') { 'install' } else { 'bootstrap' }
-        & $payload $action --apply "here:$target"
+        $endpoint = if ($commands -match '^Endpoints: : ') { ':' } else { 'here:' }
+        & $payload $action --apply "${endpoint}$target"
         if ($LASTEXITCODE -ne 0) { throw "Installation stopped (installer exit code $LASTEXITCODE). See the error above." }
         Write-Host "Installed sshore ${Version}: $target"
         if ($Path -or -not $foundOnPath) {

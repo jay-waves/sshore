@@ -57,6 +57,12 @@ exec sh $INSTALL --bin-dir $BIN --version 0.3.2
 exec $BIN/sshore --version
 stdout '^sshore 0.3.2$'
 
+# A release that advertises the new endpoints receives the colon prefix.
+exec sh bundle 0.3.3
+exec sh $INSTALL --bin-dir $BIN --version 0.3.3
+exec $BIN/sshore --version
+stdout '^sshore 0.3.3$'
+
 -- bundle --
 set -eu
 asset=sshore_${1}_linux_amd64.tar.gz
@@ -69,10 +75,16 @@ sha256sum "$asset" > SHA256SUMS
 set -eu
 if [ "$1" = --version ]; then echo "sshore $version"; exit; fi
 action=bootstrap
-if [ "$version" = 0.3.2 ]; then action=install; fi
-if [ "$1" = --help ]; then printf '  %s  Install sshore\n' "$action"; exit; fi
+if [ "$version" != 0.3.1 ]; then action=install; fi
+if [ "$1" = --help ]; then
+    printf '  %s  Install sshore\n' "$action"
+    if [ "$version" = 0.3.3 ]; then echo 'Endpoints: : selects this machine'; fi
+    exit 0
+fi
 [ "$1" = "$action" ] && [ "$2" = --apply ] || exit 2
-target=${3#here:}
+prefix=here:
+if [ "$version" = 0.3.3 ]; then prefix=:; fi
+case "$3" in "$prefix"*) target=${3#"$prefix"};; *) exit 2;; esac
 cp -p "$target" "$target-backup"
 cp "$0" "$target.next"
 mv "$target.next" "$target"

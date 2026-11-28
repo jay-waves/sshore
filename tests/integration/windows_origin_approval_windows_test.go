@@ -44,7 +44,7 @@ func testWindowsOriginApproval(t *testing.T, host string, command func(...string
 		send("echo first>ci-origin-first\\source.txt\r")
 		send("echo second>ci-origin-second\\source.txt\r")
 		// Consent belongs to the origin terminal. Declining must leave no local file.
-		send("sshore cp .:ci-origin-first\\source.txt ..:\"" + first + "\"\r")
+		send("sshore cp :ci-origin-first\\source.txt ::\"" + first + "\"\r")
 		wait("Approve this request? [y/N]", true)
 		send("\r")
 		wait("approval cancelled")
@@ -54,7 +54,7 @@ func testWindowsOriginApproval(t *testing.T, host string, command func(...string
 		}
 
 		// A multi-file approval gives each destination its own review.
-		send("sshore cp .:ci-origin-first\\source.txt .:ci-origin-second\\source.txt ..:\"" + first + "\"\r")
+		send("sshore cp :ci-origin-first\\source.txt :ci-origin-second\\source.txt ::\"" + first + "\"\r")
 		wait("Approve this request? [y/N]", true)
 		send("y\r")
 		wait("Save as:", true)
@@ -64,7 +64,7 @@ func testWindowsOriginApproval(t *testing.T, host string, command func(...string
 		wait("Transferred 2/2 files.")
 		wait("C:\\Users\\sshore-fixture>", true)
 
-		send("sshore cp ..:\"" + first + "\" .:ci-origin-upload\r")
+		send("sshore cp ::\"" + first + "\" :ci-origin-upload\r")
 		wait("Approve this request? [y/N]", true)
 		send("y\r")
 		wait("Local file to upload:", true)
@@ -75,13 +75,13 @@ func testWindowsOriginApproval(t *testing.T, host string, command func(...string
 		send("echo CI_UPLOADED=%CI_UPLOADED%\r")
 		wait("CI_UPLOADED=first")
 
-		send("sshore mount .:ci-origin-first ..: --read-only\r")
+		send("sshore mount :ci-origin-first :: --read-only\r")
 		wait("Approve this request? [y/N]", true)
 		send("\r")
 		wait("approval cancelled")
 		wait("C:\\Users\\sshore-fixture>", true)
 
-		send(fmt.Sprintf("sshore fwd .:%d ..:%d\r", service.Addr().(*net.TCPAddr).Port, forwardPort))
+		send(fmt.Sprintf("sshore fwd :%d ::%d\r", service.Addr().(*net.TCPAddr).Port, forwardPort))
 		wait("Local target port (Enter to approve, Ctrl-C to cancel):", true)
 		send("\r")
 		wait("Started forward/")

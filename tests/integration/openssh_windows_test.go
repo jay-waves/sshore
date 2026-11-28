@@ -192,9 +192,9 @@ func testWindowsForward(t *testing.T, command func(...string) *exec.Cmd, host st
 	address := reserved.Addr().String()
 	servicePort := service.Addr().(*net.TCPAddr).Port
 	forwardPort := reserved.Addr().(*net.TCPAddr).Port
-	source, target := fmt.Sprintf("%s:%d", host, servicePort), fmt.Sprintf("here:%d", forwardPort)
+	source, target := fmt.Sprintf("%s:%d", host, servicePort), fmt.Sprintf(":%d", forwardPort)
 	if reverse {
-		source, target = fmt.Sprintf("here:%d", servicePort), fmt.Sprintf("%s:%d", host, forwardPort)
+		source, target = fmt.Sprintf(":%d", servicePort), fmt.Sprintf("%s:%d", host, forwardPort)
 	}
 	args := append([]string{"forward", source, target, "--ssh"}, sshOptions...)
 	if !reverse {

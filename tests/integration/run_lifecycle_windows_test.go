@@ -98,7 +98,7 @@ func TestWindowsProgramArguments(t *testing.T) {
 	t.Run("start without delimiter opens a shell", func(t *testing.T) {
 		out, err := runWindowsTerminal(t, ctx, command("start", "--name", "default-shell"), func(send func(string), wait terminalWait) {
 			confirmLaunch(send, wait)
-			wait("Connected .:default-shell")
+			wait("Connected :default-shell")
 			send("echo DEFAULT_SHELL_READY\r")
 			wait("DEFAULT_SHELL_READY")
 			send("exit\r")
@@ -185,9 +185,9 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	}
 	out, err = runWindowsTerminal(t, ctx, start(), func(send func(string), wait terminalWait) {
 		confirmLaunch(send, wait)
-		wait("Connected .:lifecycle")
+		wait("Connected :lifecycle")
 		send("\x02d")
-		wait("Detached from .:lifecycle")
+		wait("Detached from :lifecycle")
 		wait("sshore on local>", true)
 		send("exit\r")
 	})
@@ -226,9 +226,9 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	}
 
 	out, err = runWindowsTerminal(t, ctx, command("attach", "lifecycle"), func(send func(string), wait terminalWait) {
-		wait("Connected .:lifecycle")
+		wait("Connected :lifecycle")
 		send("\x02d")
-		wait("Detached from .:lifecycle")
+		wait("Detached from :lifecycle")
 		wait("sshore on local>", true)
 		send("exit\r")
 	})
@@ -240,7 +240,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	}
 
 	out, err = runWindowsTerminal(t, ctx, command("attach", id), func(send func(string), wait terminalWait) {
-		wait("Connected .:lifecycle")
+		wait("Connected :lifecycle")
 		send("kept\r")
 		wait("RESUMED=kept")
 		wait("sshore on local>", true)
@@ -255,9 +255,9 @@ func TestWindowsRunLifecycle(t *testing.T) {
 
 	out, err = runWindowsTerminal(t, ctx, start(), func(send func(string), wait terminalWait) {
 		confirmLaunch(send, wait)
-		wait("Connected .:lifecycle")
+		wait("Connected :lifecycle")
 		send("\x02d")
-		wait("Detached from .:lifecycle")
+		wait("Detached from :lifecycle")
 		wait("sshore on local>", true)
 		send("exit\r")
 	})

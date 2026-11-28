@@ -249,7 +249,7 @@ func rootConsoleOptions(current options, command cliArguments) (*options, error)
 		return nil, err
 	}
 	if !next.local {
-		return nil, usage("use shell [.:PATH] [--name NAME] to open a shell on this host")
+		return nil, usage("use shell [:PATH] [--name NAME] to open a shell on this host")
 	}
 	next.environment, next.noEscape = current.environment, current.noEscape
 	return &next, nil

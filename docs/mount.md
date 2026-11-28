@@ -3,7 +3,7 @@
 ## Path selection and startup
 
 - `HOST:` uses the remote home and `:` allocates a local mountpoint. Use `--lf` to browse
-  omitted paths and Enter to select a directory. Explicit `HOST:~` and `.:` use the defaults
+  omitted paths and Enter to select a directory. Explicit `HOST:~` and `:` use the defaults
   even with `--lf`.
 - Windows drive-letter mounts use the last component of the resolved remote directory.
   For example, `/srv/projects/work` mounts as `\\sshore\work`. Share names use lowercase.
@@ -22,7 +22,7 @@
 - Use `sshore kill TASK` to unmount. A busy unmount can be retried after files are
   closed. If the worker stops responding during shutdown, the daemon terminates
   that worker.
-- Direct mounts start one SSH exec channel. An `..:` request first goes through
+- Direct mounts start one SSH exec channel. An `::` request first goes through
   [local approval](approval.md).
   The approved route binds the remote directory and access mode to the original
   detached shell. The resulting resource owns its connection and can outlive that shell.

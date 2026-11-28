@@ -120,18 +120,23 @@ main() {
     [ ! -d "$install_target" ] || fail 'installation target is a directory'
     chmod 755 "$install_tmp/sshore"
     [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
-    # Older published targets expose the same apply operation as bootstrap.
+    # Select the staged binary's CLI, including for pinned older releases.
+    install_help=$("$install_tmp/sshore" --help) || fail 'cannot read staged client help'
     install_action=bootstrap
-    if "$install_tmp/sshore" --help | grep -Eq '^[[:space:]]+install[[:space:]]'; then
+    if printf '%s\n' "$install_help" | grep -Eq '^[[:space:]]+install[[:space:]]'; then
         install_action=install
+    fi
+    install_endpoint=here:
+    if printf '%s\n' "$install_help" | grep -q '^Endpoints: : '; then
+        install_endpoint=:
     fi
 
     # Keep the script's stdin on the pipe. Only the apply step reads from the
     # terminal when available; otherwise it inherits stdin (e.g. SSH exec).
     if ( : 2>/dev/null </dev/tty ); then
-        "$install_tmp/sshore" "$install_action" --apply "here:$install_target" </dev/tty
+        "$install_tmp/sshore" "$install_action" --apply "$install_endpoint$install_target" </dev/tty
     else
-        "$install_tmp/sshore" "$install_action" --apply "here:$install_target"
+        "$install_tmp/sshore" "$install_action" --apply "$install_endpoint$install_target"
     fi
     add_to_path
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"

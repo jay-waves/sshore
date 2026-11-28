@@ -31,6 +31,47 @@ func splitPortEndpoint(value string) (string, string, error) {
 	return splitEndpoint(value)
 }
 
+func parseForwardRules(args []string, attached bool) (string, []ports.Rule, error) {
+	if len(args) == 2 {
+		host, rule, err := parseForwardEndpoints(args, attached)
+		return host, []ports.Rule{rule}, err
+	}
+	target := args[len(args)-1]
+	_, targetPort, err := splitPortEndpoint(target)
+	if err != nil {
+		return "", nil, err
+	}
+	if targetPort != "" {
+		return "", nil, usage("multiple sources require a target without a port")
+	}
+	var host string
+	rules := make([]ports.Rule, 0, len(args)-1)
+	seen := make(map[int]bool, len(args)-1)
+	for _, source := range args[:len(args)-1] {
+		_, port, err := splitPortEndpoint(source)
+		if err != nil {
+			return "", nil, err
+		}
+		if port == "" {
+			return "", nil, usage("each source must specify a port")
+		}
+		peer, rule, err := parseForwardEndpoints([]string{source, target + port}, attached)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(rules) > 0 && (peer != host || rule.Reverse != rules[0].Reverse) {
+			return "", nil, usage("all source ports must be on the same machine")
+		}
+		if seen[rule.RemotePort] {
+			return "", nil, usage("duplicate source port %d", rule.RemotePort)
+		}
+		seen[rule.RemotePort] = true
+		host = peer
+		rules = append(rules, rule)
+	}
+	return host, rules, nil
+}
+
 // Both entry points mirror SOURCE on TARGET. Only the client endpoint may
 // omit its port, and a remote request can only suggest that client port.
 func parseForwardEndpoints(args []string, attached bool) (string, ports.Rule, error) {
@@ -50,7 +91,7 @@ func parseForwardEndpoints(args []string, attached bool) (string, ports.Rule, er
 	if attached {
 		client = originLabel
 	} else if source == "origin" || target == "origin" {
-		return "", rule, usage("..: requires an attached sshore shell")
+		return "", rule, usage(":: requires an attached sshore shell")
 	}
 	rule.Reverse = source == client
 	host, remotePort, localPort := source, sourcePort, targetPort
@@ -58,7 +99,7 @@ func parseForwardEndpoints(args []string, attached bool) (string, ports.Rule, er
 		host, remotePort, localPort = target, targetPort, sourcePort
 	}
 	if attached && host != "here" {
-		return "", rule, usage("forward requires one .:PORT and one ..:[PORT]")
+		return "", rule, usage("forward requires one :PORT and one ::[PORT]")
 	}
 	if (source == client) == (target == client) {
 		return "", rule, usage("forward requires one client endpoint and one remote endpoint")
@@ -103,8 +144,8 @@ func (f forwardConfig) description(client, remote string) string {
 	return mapping
 }
 
-func validateForwardProposal(op operation, count int) error {
-	if count != 1 || op.LocalHint != "" || op.Path != "" || op.Name != "" || op.Size != 0 ||
+func validateForwardProposal(op operation) error {
+	if op.LocalHint != "" || op.Path != "" || op.Name != "" || op.Size != 0 ||
 		op.Forward.Validate(true) != nil {
 		return fmt.Errorf("invalid port request")
 	}
@@ -166,7 +207,7 @@ func startForwardSession(f forwardConfig) (int, error) {
 // Reconnect only an already-established, explicitly opted-in local forward.
 // Each retry owns a new transport; application TCP connections are not resumed.
 func runForward(ctx context.Context, f forwardConfig, s *resourceService, onReady func() error) error {
-	client := "local"
+	client := "here"
 	if f.Connection != nil {
 		client = originLabel
 	}

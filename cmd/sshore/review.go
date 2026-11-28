@@ -36,14 +36,14 @@ func newApprovalRequest(o options, shellPID int, ops []operation) (requestRecord
 }
 
 type approvedOperation struct {
-	config resourceConfig
-	files  []fileCopy
+	configs []resourceConfig
+	files   []fileCopy
 }
 
 func selectApprovedOperation(console *termui.LocalConsole, input *termui.Input, request requestRecord) (approvedOperation, error) {
 	var selected approvedOperation
 	var err error
-	if request.Operations[0].Kind != "forward" {
+	if request.Operations[0].Kind != "forward" || len(request.Operations) > 1 {
 		line, err := input.ReadPrefilled("Approve this request? [y/N] ", false, "")
 		if err != nil || !termui.ConfirmYes(line) {
 			return selected, errors.New("approval cancelled")
@@ -51,7 +51,13 @@ func selectApprovedOperation(console *termui.LocalConsole, input *termui.Input, 
 	}
 	switch request.Operations[0].Kind {
 	case "mount", "forward":
-		selected.config, err = selectApprovedResource(console, input, &request)
+		for _, op := range request.Operations {
+			config, err := selectApprovedResource(console, input, &request, op)
+			if err != nil {
+				return selected, err
+			}
+			selected.configs = append(selected.configs, config)
+		}
 	default:
 		if request.Operations[0].LF {
 			if err := input.Close(); err != nil {
@@ -75,7 +81,7 @@ func (*localApproval) Error() string { return "local approval requested" }
 func executeLocalApproval(request requestRecord, source options) error {
 	var selection approvedOperation
 	defer func() { closeCopyBatch(selection.files) }()
-	var started resourceRecord
+	var started []resourceRecord
 	err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
 		input, err := newLocalInput()
 		if err != nil {
@@ -85,13 +91,20 @@ func executeLocalApproval(request requestRecord, source options) error {
 		selection, err = selectApprovedOperation(console, input, request)
 		// Release stdin before the SSH broker reads credentials in this console.
 		err = errors.Join(err, input.Close())
-		if err == nil && selection.config.kind() != "" {
-			started, err = launchResourceBackground(selection.config, request.Connection.Directory)
+		if err != nil {
+			return err
 		}
-		return err
+		for _, config := range selection.configs {
+			record, err := launchResourceBackground(config, request.Connection.Directory)
+			if err != nil {
+				return err
+			}
+			started = append(started, record)
+		}
+		return nil
 	})
-	if started.Kind != "" {
-		reportResourceStartup(started)
+	for _, record := range started {
+		reportResourceStartup(record)
 	}
 	if err == nil && len(selection.files) != 0 {
 		err = runApprovedFiles(request, source, selection.files)
@@ -111,7 +124,12 @@ func approvalDescription(request requestRecord) string {
 			}
 			fmt.Fprintf(&body, "\nMount remote directory %s (%s)", cleanText(op.Path), mode)
 		case "forward":
-			fmt.Fprintf(&body, "\n%s", pendingForwardDescription(op.Forward))
+			if len(request.Operations) > 1 {
+				f := forwardConfig{Rule: op.Forward}
+				fmt.Fprintf(&body, "\n%s", f.description(originLabel, request.Connection.Host))
+			} else {
+				fmt.Fprintf(&body, "\n%s", pendingForwardDescription(op.Forward))
+			}
 			continue
 		case "download":
 			if op.Recursive {
@@ -152,8 +170,7 @@ func prepareApprovalDirectory(r *requestRecord) error {
 	return nil
 }
 
-func selectApprovedResource(console *termui.LocalConsole, input *termui.Input, r *requestRecord) (resourceConfig, error) {
-	op := r.Operations[0]
+func selectApprovedResource(console *termui.LocalConsole, input *termui.Input, r *requestRecord, op operation) (resourceConfig, error) {
 	if op.Kind == "mount" {
 		hint, err := approvalPathHint(op.LocalHint)
 		if err != nil {
@@ -186,11 +203,13 @@ func selectApprovedResource(console *termui.LocalConsole, input *termui.Input, r
 	}
 
 	rule := op.Forward
-	port, err := readForwardPort(input, rule)
-	if err != nil {
-		return resourceConfig{}, err
+	if len(r.Operations) == 1 {
+		port, err := readForwardPort(input, rule)
+		if err != nil {
+			return resourceConfig{}, err
+		}
+		rule.LocalPort = port
 	}
-	rule.LocalPort = port
 	f := forwardConfig{
 		Host: r.Connection.Host, Rule: rule,
 		ResumePID: r.PID, ApprovalID: r.ID, Connection: &r.Connection,

@@ -36,7 +36,15 @@ func validateOperations(ops []operation) error {
 		return fmt.Errorf("request must contain 1–%d operations", maxRequestItems)
 	}
 	var total int64
+	first := ops[0]
+	var forwardPorts map[int]bool
+	if first.Kind == "forward" && len(ops) > 1 {
+		forwardPorts = make(map[int]bool, len(ops))
+	}
 	for _, op := range ops {
+		if (op.Kind == "forward") != (first.Kind == "forward") {
+			return fmt.Errorf("forward requests cannot be mixed with other operations")
+		}
 		if len(op.LocalHint) > 4096 || strings.ContainsAny(op.LocalHint, "\x00\r\n") {
 			return fmt.Errorf("invalid local endpoint hint")
 		}
@@ -73,8 +81,16 @@ func validateOperations(ops []operation) error {
 				return fmt.Errorf("unexpected upload metadata")
 			}
 		case "forward":
-			if err := validateForwardProposal(op, len(ops)); err != nil {
+			if err := validateForwardProposal(op); err != nil {
 				return err
+			}
+			rule := op.Forward
+			if forwardPorts != nil {
+				if rule.LocalPort != rule.RemotePort || rule.Reverse != first.Forward.Reverse ||
+					rule.UDP != first.Forward.UDP || forwardPorts[rule.RemotePort] {
+					return fmt.Errorf("invalid batch of mirrored forwards")
+				}
+				forwardPorts[rule.RemotePort] = true
 			}
 		default:
 			return fmt.Errorf("unsupported requested operation")

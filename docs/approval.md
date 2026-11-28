@@ -2,18 +2,19 @@
 
 ## Local approval
 
-A program in an attached shell can request a copy, mount or port forward through `..:`.
+A program in an attached shell can request a copy, mount or port forward through `::`.
 The request contains bounded operation metadata and optional path or port suggestions. The
 client leaves the remote attachment and presents the request in a local approval screen.
 The screen also handles any SSH credentials needed to start a mount or forward.
-In an attached shell, use `.: ..: --lf` with `cp` or `mount` to browse the host
-before requesting approval. Use `cp ..: .: --lf` to browse for the source on the client after approving.
+In an attached shell, use `: :: --lf` with `cp` or `mount` to browse the host
+before requesting approval. Use `cp :: : --lf` to browse for the source on the client after approving.
 
 File and mount requests show `Approve this request? [y/N]` before local endpoint
-selection. For a forward, the screen shows the direction and fixed remote endpoint.
-Submitting a valid local port approves that mapping. The remote port is prefilled when the
-request omits the local port. For a mount, edit the suggested mountpoint or press Enter on a
-blank line to allocate one automatically. Use `--lf` to browse for a mountpoint.
+selection. For a single forward, submitting a valid local port approves the mapping. The
+remote port is prefilled when the request omits the local port. A batch shows each mirrored
+mapping and asks for one confirmation. Each started mapping has its own task ID. For a
+mount, edit the suggested mountpoint or press Enter on a blank line to allocate one
+automatically. Use `--lf` to browse for a mountpoint.
 
 Cancel, EOF or lack of an interactive terminal rejects the request without executing it.
 Grants are single-use, and there is no pending request queue. Unsolicited transfer offers,
@@ -46,7 +47,7 @@ It lists TCP listeners and bound UDP ports on IPv4 wildcard and loopback address
 with `/`, select a listener, and press Enter. Submit the target port to start the forward
 using the selected protocol.
 Both browsers restore the terminal before running the chosen command.
-Requests sent to `..:` follow the same approval flow as the corresponding CLI command.
+Requests sent to `::` follow the same approval flow as the corresponding CLI command.
 
 ## Command console
 

@@ -43,13 +43,14 @@ Use SSH host aliases from `ssh_config`.
 ```sh
 sshore sh jay-waves@pi  # Log in as a specific SSH user.
 sshore sh pi -J jump    # Open a shell through a jump host.
-sshore forward pi:3000 .:8080  # Reach the remote service on local port 8080.
+sshore forward pi:3000 :8080  # Reach the remote service on local port 8080.
 sshore ping pi                # Measure SSH latency.
 sshore fwd --udp pi:53 1053   # Forward a remote DNS service to local port 1053.
 ```
 
-Run `sshore fwd .:9090 ..:9091` from an attached remote shell to request
-forwarding its port 9090 to port 9091 on the client. Approve it on the client.
+Run `sshore fwd :9090 ::9091` from an attached remote shell to request
+forwarding its port 9090 to port 9091 on the client. Use `sshore fwd 100 200 3000 ::`
+to request a batch that keeps the same port numbers. Approve the request on the client.
 
 ### ssh-exec
 
@@ -133,29 +134,29 @@ account's `~/.ssh/authorized_keys`. Existing entries keep their restrictions.
 sshore cp report.zip pi:/tmp/           # Upload a file.
 sshore cp pi:/tmp/report.zip ./         # Download a file.
 sshore cp -r ./project pi:/tmp/         # Upload a directory tree.
-sshore cp --lf .: pi:                  # Pick both paths.
-sshore cp report.zip ..:              # Send to the client from an attached shell.
+sshore cp --lf : pi:                   # Pick both paths.
+sshore cp report.zip ::               # Send to the client from an attached shell.
 ```
 
-A bare path belongs to the machine running the command. Use `.:` for an
-explicit local endpoint. An empty local path uses the current directory
+A bare path belongs to the machine running the command. Use `:` for an
+explicit local endpoint and `[IPv6]:PATH` for an IPv6 host.
+An empty local path uses the current directory
 and an empty SSH path uses the remote home. Add `--lf` to pick omitted paths.
 Recursive copy includes empty directories, rejects symbolic links, and keeps
-existing files. `..:` refers to the attached client and requests its approval.
-`here:` and `origin:` are aliases for `.:` and `..:`, respectively.
-On Windows, use `C:\dir\file` or `.:C:/dir/file` for a local drive path.
+existing files. `::` refers to the attached client and requests its approval.
+On Windows, use `C:\dir\file` or `:C:/dir/file` for a local drive path.
 
 ## sftp (+fuse) — Mount a remote directory locally
 
 ```sh
-sshore mount pi:/srv/project .: --read-only
-sshore mount winhost:E:/project .:
+sshore mount pi:/srv/project : --read-only
+sshore mount winhost:E:/project :
 sshore mount pi: :
 sshore mount --lf pi: :
 ```
 
 An empty remote path mounts the remote home and an empty local mountpoint
-allocates one automatically. Add `--lf` to pick omitted paths. Use `.:` to
+allocates one automatically. Add `--lf` to pick omitted paths. Use `:` to
 keep automatic mountpoint allocation with `--lf`.
 
 Windows hosts serve directories on NTFS and ReFS volumes; other filesystems are rejected.

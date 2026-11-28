@@ -319,12 +319,16 @@ func executeShellCommand(o options) (int, error) {
 	return runLocalCommand(o)
 }
 
-const localEndpointPrefix = ".:"
-const originEndpointPrefix = "..:"
+const localEndpointPrefix = ":"
+const originEndpointPrefix = "::"
 
 func formatCLIEndpoint(host, value string) string {
 	switch host {
 	case "here":
+		// A leading colon in a local relative path must survive formatting.
+		if strings.HasPrefix(value, ":") {
+			value = "./" + value
+		}
 		return localEndpointPrefix + value
 	case "origin":
 		return originEndpointPrefix + value
@@ -338,13 +342,9 @@ func splitEndpoint(value string) (host, suffix string, err error) {
 	case strings.HasPrefix(value, originEndpointPrefix):
 		return "origin", value[len(originEndpointPrefix):], nil
 	case strings.HasPrefix(value, "0:"):
-		return "", "", usage("use ..: in place of 0: for the attached client")
-	case strings.HasPrefix(value, "::"):
-		return "", "", usage("use ..: for the attached client, or bracket an IPv6 host")
+		return "", "", usage("use :: in place of 0: for the attached client")
 	case strings.HasPrefix(value, localEndpointPrefix):
 		return "here", value[len(localEndpointPrefix):], nil
-	case strings.HasPrefix(value, ":"):
-		return "here", value[1:], nil
 	}
 	address, offset := value, 0
 	if user, after, ok := strings.Cut(value, "@"); ok && !strings.ContainsAny(user, ":/\\") {
@@ -362,11 +362,17 @@ func splitEndpoint(value string) (host, suffix string, err error) {
 	}
 	separator := strings.IndexByte(address[start:], ':')
 	if separator < 0 {
-		return "", "", usage("endpoint requires a colon: use HOST:VALUE, .:VALUE or ..:VALUE")
+		return "", "", usage("endpoint requires a colon: use HOST:VALUE, :VALUE or ::VALUE")
 	}
 	separator += offset + start
 	if strings.ContainsAny(value[:separator], "/\\") {
 		return "", "", usage("invalid endpoint host")
+	}
+	switch value[:separator] {
+	case ".", "here":
+		return "", "", usage("use : for the local endpoint")
+	case "..", "origin":
+		return "", "", usage("use :: for the attached client")
 	}
 	host, err = endpointHost(value[:separator])
 	return host, value[separator+1:], err
@@ -375,7 +381,7 @@ func splitEndpoint(value string) (host, suffix string, err error) {
 // A colon before the first path separator qualifies a file endpoint.
 func splitFileEndpoint(value string) (string, string, error) {
 	if value == "" {
-		return "", "", usage("empty file operand; use .: to select a local path")
+		return "", "", usage("empty file operand; use : to select a local path")
 	}
 	colon := strings.IndexByte(value, ':')
 	slash := strings.IndexAny(value, "/\\")
@@ -388,7 +394,7 @@ func splitFileEndpoint(value string) (string, string, error) {
 
 func remoteCopyRequest(parsed cliArguments) (string, []string, string, error) {
 	fail := func() (string, []string, string, error) {
-		return "", nil, "", usage("use copy .:SOURCE... ..:[PATH] or copy ..:[PATH] .:DIRECTORY")
+		return "", nil, "", usage("use copy :SOURCE... ::[PATH] or copy ::[PATH] :DIRECTORY")
 	}
 	if len(parsed.ssh) != 0 {
 		return "", nil, "", usage("remote copy requests inherit the attached connection")
@@ -460,7 +466,7 @@ func remoteMountRequest(parsed cliArguments) (operation, error) {
 		return operation{}, err
 	}
 	if sourceHost != "here" || targetHost != "origin" {
-		return operation{}, usage("use mount .:[DIRECTORY] ..:[MOUNTPOINT]")
+		return operation{}, usage("use mount :[DIRECTORY] ::[MOUNTPOINT]")
 	}
 	if source == "" && !parsed.has("--lf") {
 		source = "."
@@ -506,7 +512,7 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 	case "here":
 		return copyEndpoint{path: path, pick: path == "", stream: path == "-"}, nil
 	case "origin":
-		return copyEndpoint{}, usage("..: requires an attached sshore shell")
+		return copyEndpoint{}, usage(":: requires an attached sshore shell")
 	}
 	return copyEndpoint{host: host, path: path, pick: path == ""}, nil
 }
@@ -580,7 +586,7 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 		return ftpOptions{}, err
 	}
 	if host == "here" || host == "origin" || targetHost != "here" {
-		return ftpOptions{}, usage("use mount HOST:SOURCE .:[MOUNTPOINT]")
+		return ftpOptions{}, usage("use mount HOST:SOURCE :[MOUNTPOINT]")
 	}
 	browse := parsed.has("--lf")
 	if remote == "" && !browse {
@@ -663,16 +669,27 @@ func runEndpointForward(parsed cliArguments) (int, error) {
 	if attached && (len(parsed.ssh) != 0 || parsed.has("--retries")) {
 		return 2, usage("remote forward requests inherit the attached connection")
 	}
-	host, rule, err := parseForwardEndpoints(parsed.operands, attached)
+	host, rules, err := parseForwardRules(parsed.operands, attached)
 	if err != nil {
 		return 2, err
 	}
-	rule.UDP = parsed.has("--udp")
-	if attached {
-		return 0, requestOperations([]operation{{Kind: "forward", Forward: rule}})
+	ops := make([]operation, 0, len(rules))
+	for _, rule := range rules {
+		rule.UDP = parsed.has("--udp")
+		if attached {
+			ops = append(ops, operation{Kind: "forward", Forward: rule})
+			continue
+		}
+		rule.LocalPort = cmp.Or(rule.LocalPort, rule.RemotePort)
+		f := forwardConfig{Host: host, SSH: parsed.ssh, Retries: parsed.integer("--retries"), Rule: rule}
+		if code, err := startForwardSession(f); err != nil {
+			return code, err
+		}
 	}
-	rule.LocalPort = cmp.Or(rule.LocalPort, rule.RemotePort)
-	return startForwardSession(forwardConfig{Host: host, SSH: parsed.ssh, Retries: parsed.integer("--retries"), Rule: rule})
+	if attached {
+		return 0, requestOperations(ops)
+	}
+	return 0, nil
 }
 
 func newLocalInput() (*termui.Input, error) {

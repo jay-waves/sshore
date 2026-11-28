@@ -11,8 +11,9 @@ import (
 )
 
 type resourceApproval struct {
-	id         string
-	operations []operation
+	id            string
+	operations    []operation
+	mirroredBatch bool
 }
 
 func (s *shellTask) serveRoutedResource(c net.Conn, request message, relay func(net.Conn, message) error) {
@@ -86,7 +87,7 @@ func (s *shellTask) consumeResourceApproval(request message, op operation) error
 		}
 		expected := grant.operations[0]
 		// Only the origin port may differ from the proposal.
-		if expected.Kind == "forward" {
+		if expected.Kind == "forward" && !grant.mirroredBatch {
 			expected.Forward.LocalPort = op.Forward.LocalPort
 		}
 		if expected != op {
