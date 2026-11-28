@@ -53,7 +53,7 @@ func ValidateMountpoint(p string) error {
 	}
 	return nil
 }
-func mountFTP(f *ftpFS, p string) (ftpMount, error) {
+func mountFTP(f *ftpFS, p string, _ bool) (ftpMount, string, error) {
 	timeout := time.Second
 	opts := &fs.Options{AttrTimeout: &timeout, EntryTimeout: &timeout, MountOptions: fuse.MountOptions{FsName: "sshore", Name: "sshore", DisableXAttrs: true, MaxReadAhead: 128 * 1024}}
 	if f.readOnly {
@@ -62,9 +62,9 @@ func mountFTP(f *ftpFS, p string) (ftpMount, error) {
 	mounted, err := fs.Mount(p, &ftpNode{backend: f}, opts)
 	var helper *exec.Error
 	if runtime.GOOS == "linux" && errors.As(err, &helper) && errors.Is(err, os.ErrNotExist) && path.Base(helper.Name) == "fusermount" {
-		return nil, fmt.Errorf("%w; install fuse3 on the machine creating the mount (Fedora: sudo dnf install fuse3)", err)
+		return nil, "", fmt.Errorf("%w; install fuse3 on the machine creating the mount (Fedora: sudo dnf install fuse3)", err)
 	}
-	return mounted, err
+	return mounted, p, err
 }
 
 type ftpNode struct {

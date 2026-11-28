@@ -45,6 +45,9 @@ Start with these scenarios when reviewing a design change:
   local ConPTY, and remote shell creation, detach, reattach, exit, and
   kill through Windows OpenSSH under a separate account.
   A WSL client also tests Windows SFTP uploads, downloads and no-overwrite behavior.
+- On Windows with WinFsp installed, run
+  `go run ./scripts go test -tags integration -run '^TestWindowsMount$' ./tests/integration`
+  to check native drive and directory mounts against a local SFTP fixture.
 
 The [Tests workflow](../.github/workflows/tests.yml) runs on demand and on pushes
 to `main`.

@@ -3,6 +3,7 @@
 package files
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -23,8 +24,12 @@ import (
 // rejects names that Windows cannot represent rather than aliasing them.
 
 func ValidateMountpoint(p string) error {
-	if len(p) == 2 && p[1] == ':' && ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) {
-		if _, e := os.Stat(p + `\`); e == nil {
+	if isDriveLetter(p) {
+		drives, err := windows.GetLogicalDrives()
+		if err != nil {
+			return err
+		}
+		if drives&driveBit(p) != 0 {
 			return fmt.Errorf("drive %s is already in use", p)
 		}
 		return nil
@@ -34,6 +39,12 @@ func ValidateMountpoint(p string) error {
 	}
 	return nil
 }
+
+func isDriveLetter(p string) bool {
+	return len(p) == 2 && p[1] == ':' && (p[0]&^0x20) >= 'A' && (p[0]&^0x20) <= 'Z'
+}
+
+func driveBit(p string) uint32 { return 1 << ((p[0] &^ 0x20) - 'A') }
 
 type ftpWindowsMount struct {
 	fs      *winfsp.FileSystem
@@ -47,20 +58,52 @@ func (m *ftpWindowsMount) Unmount() error {
 	m.once.Do(func() { m.fs.Unmount(); m.cleanup(); close(m.done) })
 	return nil
 }
-func mountFTP(f *ftpFS, p string) (ftpMount, error) {
+func mountFTP(f *ftpFS, p string, automatic bool) (ftpMount, string, error) {
 	opts := []winfsp.Option{winfsp.FileSystemName("sshore")}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, "", fmt.Errorf("identify Windows mount owner: %w", err)
+	}
+	group, err := windows.GetCurrentProcessToken().GetTokenPrimaryGroup()
+	if err != nil {
+		return nil, "", fmt.Errorf("identify Windows mount group: %w", err)
+	}
+	sid := user.User.Sid.String()
+	// The UNC path can outlive a logon session's drive-letter namespace.
+	// Give the mounting account and SYSTEM access through either spelling.
+	sddl := "O:" + sid + "G:" + group.PrimaryGroup.String() + "D:P(A;;FA;;;" + sid + ")(A;;FA;;;SY)"
+	security, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return nil, "", fmt.Errorf("create Windows mount permissions: %w", err)
+	}
+	if isDriveLetter(p) {
+		// Windows can resolve final paths on WinFsp network drives.
+		opts = append(opts, winfsp.VolumePrefix(`\sshore\`+rand.Text()))
+	}
 	if f.readOnly {
 		opts = append(opts, winfsp.Attributes(winfsp.FspFSAttributeReadOnlyVolume))
 	}
 	pool := &ftpWindowsMetadataPool{backend: f, entries: make(map[string]*ftpWindowsMetadataEntry)}
 	behaviour := gofs.New(&ftpWindowsFS{backend: f, pool: pool}).(ftpWindowsBehaviour)
-	adapter := &ftpWindowsAttributes{ftpWindowsBehaviour: behaviour, backend: f}
-	host, e := winfsp.Mount(adapter, p, opts...)
-	if e != nil {
-		pool.close()
-		return nil, fmt.Errorf("WinFsp mount failed: %w", e)
+	adapter := &ftpWindowsAttributes{ftpWindowsBehaviour: behaviour, backend: f, security: security}
+	var tried uint32
+	for {
+		host, err := winfsp.Mount(adapter, p, opts...)
+		if err == nil {
+			return &ftpWindowsMount{fs: host, done: make(chan struct{}), cleanup: pool.close}, p, nil
+		}
+		if !automatic || !errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
+			pool.close()
+			return nil, "", fmt.Errorf("WinFsp mount failed: %w", err)
+		}
+		// Another mount won this drive while this worker was connecting.
+		tried |= driveBit(p)
+		p, err = availableDrive(tried)
+		if err != nil {
+			pool.close()
+			return nil, "", err
+		}
 	}
-	return &ftpWindowsMount{fs: host, done: make(chan struct{}), cleanup: pool.close}, nil
 }
 
 type ftpWindowsFS struct {
@@ -254,7 +297,21 @@ type ftpWindowsBehaviour interface {
 
 type ftpWindowsAttributes struct {
 	ftpWindowsBehaviour
-	backend *ftpFS
+	backend  *ftpFS
+	security *windows.SECURITY_DESCRIPTOR
+}
+
+func (a *ftpWindowsAttributes) GetSecurityByName(ref *winfsp.FileSystemRef, name string, flags winfsp.GetSecurityByNameFlags) (uint32, *windows.SECURITY_DESCRIPTOR, error) {
+	attributes, sd, err := a.ftpWindowsBehaviour.GetSecurityByName(ref, name, flags)
+	if sd != nil {
+		sd = a.security
+	}
+	return attributes, sd, err
+}
+
+func (a *ftpWindowsAttributes) GetSecurity(ref *winfsp.FileSystemRef, h uintptr) (*windows.SECURITY_DESCRIPTOR, error) {
+	_, err := a.ftpWindowsBehaviour.GetSecurity(ref, h)
+	return a.security, err
 }
 
 func (a *ftpWindowsAttributes) Open(ref *winfsp.FileSystemRef, name string, opts, access uint32, info *winfsp.FSP_FSCTL_FILE_INFO) (uintptr, error) {

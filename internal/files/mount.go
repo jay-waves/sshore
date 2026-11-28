@@ -62,13 +62,18 @@ func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error)
 		return 1, err
 	}
 	cleanup := func() {}
+	var automaticMountpoint bool
 	defer func() { cleanup() }()
 	prepareMountpoint := func() error {
+		automaticMountpoint = o.Mountpoint == ""
 		point, release, err := PrepareMountpoint(o.Mountpoint, o.Name)
 		if err != nil {
 			return err
 		}
 		o.Mountpoint, cleanup = point, release
+		if automaticMountpoint {
+			return nil
+		}
 		return ValidateMountpoint(point)
 	}
 	if o.SelectPaths == nil {
@@ -266,10 +271,11 @@ func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error)
 	}
 	startMetadataRefresh(ctx, backend)
 	backend.prefetch = startDirectoryPrefetch(ctx, backend, history)
-	mount, err := mountFTP(backend, o.Mountpoint)
+	mount, point, err := mountFTP(backend, o.Mountpoint, automaticMountpoint)
 	if err != nil {
 		return 1, err
 	}
+	o.Mountpoint = point
 	finishSetup()
 	if ctx.Err() == nil {
 		if err := service.Ready(root, o.Mountpoint); err != nil {

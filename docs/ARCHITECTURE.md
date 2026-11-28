@@ -162,14 +162,14 @@ and the startup exchange for the approved rule.
 The daemon task registry publishes mount and forward state at registration, readiness and exit.
 The caller commits startup on the launch stream. After it closes, the daemon can still stop
 a forward by cancelling its context or unmount through the mount worker's control pipe.
-The CLI formats SSH and mount diagnostics from callbacks. Copy clients and
-mount clients use `pkg/sftp/v2` alongside the embedded agents.
+Copy and mount use `pkg/sftp/v2` with embedded agents. Directory notifications use their own stream.
 The [files package](../internal/files/mount_paths.go) prepares local mountpoints.
-The pinned upstream revision includes the client disconnect fix and supports the
-project's Go version. Directory change notifications use their own stream.
-Trace changes through the [task registry](../cmd/sshore/daemon_tasks.go), [mount coordinator](../cmd/sshore/mount.go)
-and [route authorization](../cmd/sshore/resource_route_host.go). Consult [SECURITY.md](SECURITY.md)
-before changing update, reset or approval behavior.
+Windows drive-letter mounts use unique WinFsp UNC paths for handle-based path resolution.
+Automatic mounts retry if another process claims the selected drive.
+TODO: Support handle-based canonical paths for Windows directory mounts. Windows
+junctions require disk volumes, and WinFsp network volumes require drive letters here.
+See the [task registry](../cmd/sshore/daemon_tasks.go), [mount coordinator](../cmd/sshore/mount.go),
+[route authorization](../cmd/sshore/resource_route_host.go) and [security safeguards](SECURITY.md).
 
 ### Inventory and diagnostics
 

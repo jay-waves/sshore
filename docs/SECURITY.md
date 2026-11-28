@@ -258,6 +258,9 @@ approve it or choose the final local mountpoint. Approval displays the access mo
 startup revalidates the original detached shell on the mount's SSH connection.
 The resulting mount is independent of that shell. Legacy disabled mode rejects it.
 
+Windows drive mounts expose a UNC path alongside the drive letter. The file
+ACL grants access to the mounting account and SYSTEM through either path.
+
 The selected root is a navigation boundary, **not remote-account confinement**.
 Remote symlinks can be followed with the account's permissions. Linux readlink
 results are restricted to the mounted tree so absolute remote links cannot redirect
