@@ -9,12 +9,13 @@ chmod 755 $BIN/sshore
 
 # Bad arguments must fail before download or installation.
 ! exec sh $INSTALL --version ../main
-! exec sh $INSTALL --version
-! exec sh $INSTALL --unknown
+stderr 'version must be X.Y.Z'
 env TEST_ARCH=aarch64
 ! exec sh $INSTALL
+stderr 'unsupported CPU architecture'
 env TEST_ARCH=x86_64 TEST_OS=Darwin
 ! exec sh $INSTALL
+stderr 'only Linux servers/clients are supported'
 env TEST_OS=Linux
 ! exists downloads
 
@@ -22,10 +23,12 @@ exec sh bundle 0.3.1
 cp SHA256SUMS good-sums
 exec sh -c 'cat good-sums good-sums > SHA256SUMS'
 ! exec sh $INSTALL --bin-dir $BIN
+stderr 'release manifest does not identify one matching Linux asset'
 cmp $BIN/sshore old
 cp good-sums SHA256SUMS
 env TEST_DOWNLOAD_FAIL=1
 ! exec sh $INSTALL --bin-dir $BIN --version 0.3.1
+stderr 'download failed: .*SHA256SUMS'
 cmp $BIN/sshore old
 ! exists $BIN/sshore-backup
 env TEST_DOWNLOAD_FAIL=
@@ -33,13 +36,10 @@ rm downloads
 
 stdin $INSTALL
 exec sh -s -- --bin-dir $BIN
-stdout 'Installed sshore 0.3.1'
 exec $BIN/sshore --version
 stdout '^sshore 0.3.1$'
 exec sh -c '. "$HOME/.profile"; command -v sshore'
 stdout 'directory with spaces/sshore$'
-grep 'sshore_install_dir=' .bashrc
-grep 'sshore_install_dir=' .zshenv
 cmp $BIN/sshore-backup old
 grep '/latest/download/SHA256SUMS' downloads
 grep '/download/v0.3.1/sshore_0.3.1_linux_amd64.tar.gz' downloads

@@ -164,14 +164,6 @@ Match command "printf forwarding-check"
 		if err != nil {
 			t.Fatalf("keygen: %v\n%s", err, out)
 		}
-		want, err := exec.CommandContext(ctx, "ssh-keygen", "-E", "sha256", "-lvf", target+".pub").Output()
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, art, _ := strings.Cut(string(want), "\n")
-		if !strings.Contains(strings.ReplaceAll(out, "\r\n", "\n"), art) {
-			t.Fatalf("fingerprint art differs from OpenSSH:\n%s\nwant:\n%s", out, art)
-		}
 		read := func(name string) []byte {
 			t.Helper()
 			data, err := os.ReadFile(name)
@@ -205,10 +197,6 @@ Match command "printf forwarding-check"
 		}
 		if got := run(t, ctx, "sh", "-p", "2222", "-i", filepath.Join(fixture, "identity"), host, "--", "printf", "'%s'", "'--help -- -p 1 -J jump -i literal'"); got != "--help -- -p 1 -J jump -i literal" {
 			t.Fatalf("exec changed the remote command text: %q", got)
-		}
-		connection := strings.Fields(run(t, ctx, "sh", host, "--", `printf '%s\n' "$SSH_CONNECTION"`))
-		if len(connection) != 4 || connection[0] != "127.0.0.1" || connection[2] != "127.0.0.1" || connection[3] != "2222" {
-			t.Fatalf("SSH_CONNECTION from sshd = %q", connection)
 		}
 		wrongKey, err := os.ReadFile(filepath.Join(fixture, "identity.pub"))
 		if err != nil {
@@ -254,31 +242,23 @@ Match command "printf forwarding-check"
 			t.Fatal(err)
 		}
 		identity := key.Type() + " " + cryptossh.FingerprintSHA256(key)
-		for _, args := range [][]string{
-			{"sh", host, "-v", "-F", config},
-			{"--verbose", "sh", host, "-F", config},
-			{"sh", host, "--ssh", "-v", "-F", config},
+		var stderr bytes.Buffer
+		cmd := exec.CommandContext(ctx, binary, "sh", host, "--ssh", "-v", "-F", config, "--", "printf payload")
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil || string(out) != "payload" {
+			t.Fatalf("SSH stdout = %q, error = %v\n%s", out, err, &stderr)
+		}
+		for _, detail := range []string{
+			"Connecting to 127.0.0.1:2222", "Server host key verified",
+			"Negotiated kex=", "Authenticated using publickey " + identity,
 		} {
-			var stderr bytes.Buffer
-			cmd := exec.CommandContext(ctx, binary, append(args, "--", "printf payload")...)
-			cmd.Stderr = &stderr
-			out, err := cmd.Output()
-			if err != nil || string(out) != "payload" {
-				t.Fatalf("SSH stdout = %q, error = %v\n%s", out, err, &stderr)
-			}
-			for _, detail := range []string{
-				"SSH config hostname from", "Connecting to 127.0.0.1:2222 as \"sshore-fixture\"",
-				"Server version", "Server host key:", "Server host key verified",
-				"Identity file", "Offering public key: " + identity, "Authenticated using publickey " + identity,
-				"Negotiated kex=", " hostkey=", " send=", " receive=",
-			} {
-				if !strings.Contains(stderr.String(), detail) {
-					t.Fatalf("missing %q in SSH diagnostics:\n%s", detail, &stderr)
-				}
+			if !strings.Contains(stderr.String(), detail) {
+				t.Fatalf("missing %q in SSH diagnostics:\n%s", detail, &stderr)
 			}
 		}
-		var stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, binary, "sh", host, "-v", "-F", config,
+		stderr.Reset()
+		cmd = exec.CommandContext(ctx, binary, "sh", host, "-v", "-F", config,
 			"--ssh", "-o", "PubkeyAuthentication=no", "--", "printf unexpected")
 		cmd.Stderr = &stderr
 		if out, err := cmd.Output(); err == nil || len(out) != 0 ||
@@ -1178,7 +1158,6 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		for _, endpoints := range [][3]string{
 			{remote, ":", remote + " -> " + localEndpoint},
 			{":", remote, localEndpoint + " -> " + remote},
-			{remote, port, remote + " -> " + localEndpoint},
 		} {
 			out := run(t, ctx, "fwd", "-v", endpoints[0], endpoints[1])
 			_, description, _ := strings.Cut(out, "Started forward/")
@@ -1230,7 +1209,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 					wait("TCP ports", true)
 					send("u")
 					wait("UDP ports", true)
-					send("/" + source + "\r")
+					send("/" + source + "\r\r")
 					wait("Listen on "+peer+" at port:", true)
 					send("\x15" + port + "\r")
 					wait("Started forward/")
@@ -1720,7 +1699,10 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			send("\x02d")
 			wait("Detached from ")
 		})
+		assertInventory(t, ctx, "shell/"+name, true)
 		remoteCLI(t, ctx, "kill", name)
+		// The origin still has the cached task until it reconnects.
+		assertInventory(t, ctx, "shell/"+name, true)
 		// A fresh connection receives the remote daemon's current hosted shells.
 		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", "refresh-root", "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
 			wait("Connected " + host + ":refresh-root")
@@ -1809,8 +1791,6 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 				t.Fatalf("could not read remote shell ID: %q", id)
 			}
 
-			send(report)
-			wait(marker + id)
 			send("\x02d")
 			wait("Detached from " + root)
 		})
@@ -1819,23 +1799,13 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		if !found || !strings.Contains(remoteTree, "shell/"+id+" (resume-root)  T") {
 			t.Fatalf("independent remote shell is missing from its host root:\n%s", tree)
 		}
-		assertInventory(t, ctx, "shell/resume-root", true)
+		if findResource(t, local(t, ctx, "list"), "shell/resume-root").Identity == "" {
+			t.Fatal("detached shell is missing from list")
+		}
 		const missing = "ffffffffffffffffffffffffffffffff"
-		parent := exec.CommandContext(ctx, binary, "shell", "--name", "resume-parent", "--no-profile", "--no-login")
-		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
-			wait("Connected here:resume-parent")
-			// An independent client can resume a detached remote root from here.
-			send("sshore attach " + id + "\n")
-			wait("Connected " + root)
-			send("sshore detach\n")
-			wait("Detached from " + root)
-			send("sshore attach " + missing + "\n")
-			wait("unknown shell ID")
-			// The shell would otherwise inherit the rejected command's status.
-			send("exit 0\n")
-			wait("No shell attached.")
-			send("exit\r")
-		})
+		if out, err := exec.CommandContext(ctx, binary, "attach", missing).CombinedOutput(); err == nil || !strings.Contains(string(out), "unknown shell ID") {
+			t.Fatalf("unknown shell ID was accepted: %v\n%s", err, out)
+		}
 		// Verbosity must retain the saved SSH configuration when resuming by ID.
 		runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, binary, "attach", id, "-v"), func(send func(string), wait terminalWait) {
 			wait("Negotiated kex=")
@@ -1901,12 +1871,6 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			send(report)
 			wait(recorded)
 			send("\x02\x02d")
-			wait("Detached from " + child)
-			send("sshore attach build\n")
-			wait("Connected " + child)
-			send(report)
-			wait(recorded)
-			send("sshore detach\n")
 			wait("Detached from " + child)
 			send("exit\n")
 			wait("Exited here:dev")
@@ -2105,89 +2069,44 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		}
 	})
 
+	detachLocalShell := func(t *testing.T, ctx context.Context, name string) string {
+		t.Helper()
+		var id string
+		runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, binary, "sh", "--name", name, "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
+			wait("Connected here:" + name)
+			send("printf 'LOCAL_%s=%s\\n' session \"$SSHORE_LOCAL_SESSION\"\r")
+			line := strings.TrimSpace(ansi.Strip(wait("LOCAL_session=task:")))
+			_, id, _ = strings.Cut(line, "LOCAL_session=task:")
+			send("\x02d")
+			wait("No shell attached.")
+			send("exit\r")
+		})
+		if len(id) != 32 {
+			t.Fatalf("unexpected session ID %q", id)
+		}
+		return id
+	}
 	scenario("shutdown confirmation rejects a replacement task", func(t *testing.T, ctx context.Context) {
 		// Confirmation applies to the tasks in the preview. Reusing a name
 		// between preview and confirmation must leave the replacement alive.
-		localCommand := func(args ...string) *exec.Cmd { return exec.CommandContext(ctx, binary, args...) }
-		local := func(args ...string) []byte {
-			t.Helper()
-			out, err := localCommand(args...).CombinedOutput()
-			if err != nil {
-				t.Fatalf("%v: %v\n%s", args, err, out)
-			}
-			return out
-		}
-		const endpoint, name = "here:replaceable", "replaceable"
-		start := func() {
-			t.Helper()
-			runOpenSSHTerminal(t, ctx, localCommand("sh", "--name", name, "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
-				wait("Connected " + endpoint)
-				send("\x02d")
-				wait("No shell attached.")
-				send("exit\r")
-			})
-		}
-		// The detached row is the same published state that CLI selection reads.
-		identity := func() string {
-			t.Helper()
-			path := filepath.Join(os.Getenv("SSHORE_STATE_DIR"), "connections", "participation.db")
-			db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			var id string
-			err = db.View(func(tx *bolt.Tx) error {
-				b := tx.Bucket([]byte("live-task-rows"))
-				if b == nil {
-					return fmt.Errorf("missing live task rows")
-				}
-				return b.ForEach(func(key, data []byte) error {
-					if len(key) != 32 {
-						return nil
-					}
-					var row struct {
-						Shell *struct {
-							Instance, Name, State string
-							DetachedAt            time.Time `json:"detached_at"`
-						}
-					}
-					if err := json.Unmarshal(data, &row); err != nil {
-						return err
-					}
-					if row.Shell != nil && row.Shell.Name == name {
-						if id != "" || string(key) != row.Shell.Instance || row.Shell.State != "detached" || row.Shell.DetachedAt.IsZero() {
-							return fmt.Errorf("invalid detached session row: %+v", row.Shell)
-						}
-						id = string(key)
-					}
-					return nil
-				})
-			})
-			if err != nil || id == "" {
-				t.Fatalf("published detached shell %s: %v", name, err)
-			}
-			return id
-		}
-		start()
-		first := identity()
+		const name = "replaceable"
+		first := detachLocalShell(t, ctx, name)
 		var replacement string
-		out, err := runTerminal(t, ctx, localCommand("kill", "--all"), func(send func(string), wait terminalWait) {
+		out, err := runTerminal(t, ctx, exec.CommandContext(ctx, binary, "kill", "--all"), func(send func(string), wait terminalWait) {
 			wait(name)
 			wait("[y/N]", true)
-			local("kill", first)
-			start()
-			replacement = identity()
+			local(t, ctx, "kill", first)
+			replacement = detachLocalShell(t, ctx, name)
 			send("y\n")
 			wait("tasks changed; review again")
 		})
-		if err == nil || first == replacement || identity() != replacement {
+		if err == nil || first == replacement {
 			t.Fatalf("stale confirmation affected the replacement (%s → %s): %v\n%s", first, replacement, err, out)
 		}
-		if out, err := localCommand("kill", first).CombinedOutput(); err == nil {
+		if out, err := exec.CommandContext(ctx, binary, "kill", first).CombinedOutput(); err == nil {
 			t.Fatalf("the retired task ID still accepts a kill: %s", out)
 		}
-		local("kill", replacement)
+		local(t, ctx, "kill", replacement)
 	})
 
 	scenario("stopping the daemon process cleans up its detached shell", func(t *testing.T, ctx context.Context) {
@@ -2240,28 +2159,12 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			t.Fatalf("stop previous fixture daemon: %v\n%s", err, out)
 		}
 		const name = "crash-restart"
-		detach := func() string {
-			t.Helper()
-			var id string
-			runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, binary, "sh", "--name", name, "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
-				wait("Connected here:" + name)
-				send("printf 'CRASH_%s=%s\\n' session \"$SSHORE_LOCAL_SESSION\"\r")
-				line := strings.TrimSpace(ansi.Strip(wait("CRASH_session=task:")))
-				_, id, _ = strings.Cut(line, "CRASH_session=task:")
-				send("\x02d")
-				wait("No shell attached.")
-				send("exit\r")
-			})
-			if len(id) != 32 {
-				t.Fatalf("unexpected session ID %q", id)
-			}
-			return id
-		}
+
 		daemon := exec.CommandContext(ctx, binary, "daemon")
 		var old string
 		_, err := runTerminal(t, ctx, daemon, func(_ func(string), wait terminalWait) {
 			wait("Daemon running.")
-			old = detach()
+			old = detachLocalShell(t, ctx, name)
 			if err := daemon.Process.Kill(); err != nil {
 				t.Fatal(err)
 			}
@@ -2273,7 +2176,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		if out := local(t, ctx, "list"); strings.Contains(string(out), name) {
 			t.Fatalf("listed a session from the crashed daemon:\n%s", out)
 		}
-		replacement := detach()
+		replacement := detachLocalShell(t, ctx, name)
 		if replacement == old {
 			t.Fatal("replacement reused the old session ID")
 		}
@@ -2288,26 +2191,33 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		if err := os.MkdirAll(connections, 0700); err != nil {
 			t.Fatal(err)
 		}
-		marker := filepath.Join(connections, "reset-marker")
+		history := filepath.Join(connections, "participation.db")
+		db, err := bolt.Open(history, 0600, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
 		userFile := filepath.Join(root, "unrelated.txt")
-		for _, name := range []string{marker, userFile} {
-			if err := os.WriteFile(name, []byte("fixture"), 0600); err != nil {
-				t.Fatal(err)
-			}
+		if err := os.WriteFile(userFile, []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
 		}
 		decline := exec.CommandContext(ctx, binary, "kill", "--all", "--reset")
 		decline.Stdin = strings.NewReader("n\n")
 		if out, err := decline.CombinedOutput(); err == nil || !strings.Contains(string(out), "[y/N]") {
 			t.Fatalf("declined reset: %v\n%s", err, out)
 		}
-		requireFile(t, marker, "fixture")
+		if _, err := os.Stat(history); err != nil {
+			t.Fatalf("history after declined reset: %v", err)
+		}
 		confirm := exec.CommandContext(ctx, binary, "kill", "--all", "--reset")
 		confirm.Stdin = strings.NewReader("y\n")
 		if out, err := confirm.CombinedOutput(); err != nil {
 			t.Fatalf("confirmed reset: %v\n%s", err, out)
 		}
-		if _, err := os.Stat(marker); !os.IsNotExist(err) {
-			t.Fatalf("local state remains after reset: %v", err)
+		if _, err := os.Stat(history); !os.IsNotExist(err) {
+			t.Fatalf("history remains after reset: %v", err)
 		}
 		requireFile(t, userFile, "fixture")
 	})

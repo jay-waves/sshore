@@ -100,6 +100,9 @@ func TestWindowsOpenSSH(t *testing.T) {
 			wait("CI_RESUMED=retained")
 			send("exit\r")
 		})
+		if reply := raw(t, ctx, "shell", "0.0.0", "attach", "ci-shell"); !strings.Contains(reply.Error, "does not exist") {
+			t.Fatalf("exited shell remained attachable: %q", reply.Error)
+		}
 	}) {
 		return
 	}
@@ -109,12 +112,6 @@ func TestWindowsOpenSSH(t *testing.T) {
 			if reply.SoftwareVersion != "0.0.0" || !strings.Contains(reply.Error, "0.0.1") {
 				t.Fatalf("wrong release diagnostic: %+v", reply)
 			}
-		}
-	})
-	t.Run("exited shell cannot be attached", func(t *testing.T) {
-		reply := raw(t, ctx, "shell", "0.0.0", "attach", "ci-shell")
-		if !strings.Contains(reply.Error, "does not exist") {
-			t.Fatalf("expected missing task after shell exit, got %q", reply.Error)
 		}
 	})
 	t.Run("origin resource approval", func(t *testing.T) {

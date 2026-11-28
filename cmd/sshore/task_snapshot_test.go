@@ -1,11 +1,13 @@
 package main
 
 import (
-	bolt "go.etcd.io/bbolt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
@@ -134,18 +136,14 @@ func testParticipationRows(root string) (rows []participatingShell, err error) {
 	return
 }
 
-func TestHistoryResetDeletesDatabase(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "state")
-	if err := historyTransaction(root, true, func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucket(participationBucket)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := (resetPaths{state: root, account: filepath.Join(root, "daemon")}).clear(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, "connections", "participation.db")); !os.IsNotExist(err) {
-		t.Fatalf("history database after reset: %v", err)
+func TestMergeInventoryPrefersLiveShellByInstance(t *testing.T) {
+	live := shellView{Name: "work", Instance: "current", State: taskActive}
+	got := mergeInventory(inventory{Shells: []shellView{live}}, []participatingShell{
+		{Name: "work", Instance: "current", State: taskDetached},
+		{Name: "work", Instance: "other", State: taskDetached},
+	})
+	other := shellView{Name: "work", Instance: "other", State: taskDetached, Observed: true}
+	if len(got.Shells) != 2 || !slices.Contains(got.Shells, live) || !slices.Contains(got.Shells, other) {
+		t.Fatalf("merged shells: %+v", got.Shells)
 	}
 }
