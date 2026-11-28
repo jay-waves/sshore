@@ -157,7 +157,10 @@ verify_archive() {
     [ "${actual%% *}" = "$expected" ]
 }
 download() {
-    curl --disable --max-filesize "$3" --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    printf 'Downloading %s\n' "${1##*/}" >&2
+    install_progress=--silent
+    if [ -t 2 ]; then install_progress=--progress-bar; fi
+    curl --disable "$install_progress" --max-filesize "$3" --fail --show-error --location --proto '=https' --proto-redir '=https' \
         --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 2 "$1" -o "$2" || fail "download failed: $1"
 }
 

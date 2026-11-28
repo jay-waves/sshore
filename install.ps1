@@ -38,21 +38,62 @@ function Get-SshoreArchitecture {
     }
 }
 
+function Save-SshoreResponse($Content, [string]$Destination, [long]$Limit,
+        [Threading.CancellationToken]$Token, [string]$Activity) {
+    $total = $Content.Headers.ContentLength
+    if ($total -gt $Limit) { throw "Download exceeds $Limit bytes." }
+    $body = $Content.ReadAsStreamAsync()
+    $body.Wait($Token)
+    $inputStream = $body.GetAwaiter().GetResult()
+    $outputStream = [IO.File]::Create($Destination)
+    $shown = $false
+    try {
+        $buffer = New-Object byte[] 65536
+        $received = 0L
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $lastUpdate = -200
+        while ($true) {
+            $read = $inputStream.ReadAsync($buffer, 0, $buffer.Length, $Token)
+            # Waiting with the token also bounds reads on .NET Framework.
+            $read.Wait($Token)
+            $count = $read.GetAwaiter().GetResult()
+            if ($count -eq 0) { break }
+            $received += $count
+            if ($received -gt $Limit) { throw "Download exceeds $Limit bytes." }
+            $outputStream.Write($buffer, 0, $count)
+            if ($clock.ElapsedMilliseconds - $lastUpdate -ge 200) {
+                $percent = -1
+                if ($total -gt 0) { $percent = [int][Math]::Min(100, [Math]::Floor(100.0 * $received / $total)) }
+                Write-Progress -Activity $Activity -Status "$received bytes received" -PercentComplete $percent
+                $shown = $true
+                $lastUpdate = $clock.ElapsedMilliseconds
+            }
+        }
+    } finally {
+        $outputStream.Dispose()
+        if ($shown) { Write-Progress -Activity $Activity -Completed }
+    }
+}
+
 function Receive-SshoreFile([uri]$Uri, [string]$Destination, [long]$Limit = [int]::MaxValue) {
     Add-Type -AssemblyName System.Net.Http
     $oldTls = [Net.ServicePointManager]::SecurityProtocol
     $handler = New-Object Net.Http.HttpClientHandler
     $handler.AllowAutoRedirect = $false
     $client = New-Object Net.Http.HttpClient($handler)
-    $client.MaxResponseContentBufferSize = $Limit
     $client.Timeout = [TimeSpan]::FromSeconds(180)
+    $timeout = [Threading.CancellationTokenSource]::new($client.Timeout)
     try {
         [Net.ServicePointManager]::SecurityProtocol = $oldTls -bor [Net.SecurityProtocolType]::Tls12
         for ($redirect = 0; $redirect -le 10; $redirect++) {
             if (-not $Uri.IsAbsoluteUri -or $Uri.Scheme -ne 'https') {
                 throw 'Downloads and redirects must use HTTPS.'
             }
-            $response = $client.GetAsync($Uri).GetAwaiter().GetResult()
+            if ($redirect -eq 0) {
+                $activity = "Downloading $($Uri.Segments[-1])"
+                Write-Host $activity
+            }
+            $response = $client.GetAsync($Uri, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $timeout.Token).GetAwaiter().GetResult()
             try {
                 if ([int]$response.StatusCode -in 301, 302, 303, 307, 308) {
                     if (-not $response.Headers.Location) { throw 'Redirect has no Location header.' }
@@ -60,14 +101,13 @@ function Receive-SshoreFile([uri]$Uri, [string]$Destination, [long]$Limit = [int
                     continue
                 }
                 $null = $response.EnsureSuccessStatusCode()
-                $stream = [IO.File]::Create($Destination)
-                try { $null = $response.Content.CopyToAsync($stream).GetAwaiter().GetResult() }
-                finally { $stream.Dispose() }
+                Save-SshoreResponse $response.Content $Destination $Limit $timeout.Token $activity
                 return
             } finally { $response.Dispose() }
         }
         throw 'Too many download redirects.'
     } finally {
+        $timeout.Dispose()
         $client.Dispose()
         $handler.Dispose()
         [Net.ServicePointManager]::SecurityProtocol = $oldTls

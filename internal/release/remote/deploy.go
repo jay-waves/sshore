@@ -55,7 +55,7 @@ func openDeploymentFiles(ctx context.Context, client *sshio.Client) (_ *sftp.Cli
 }
 
 func Prepare(ctx context.Context, client *sshio.Client, id, version, releaseBase string, install bool,
-	track func(int64, io.Reader, func(io.Reader) error) error) (home string, uploaded bool, err error) {
+	progress release.AssetProgress, track func(int64, io.Reader, func(io.Reader) error) error) (home string, uploaded bool, err error) {
 	ftp, closeFiles, err := openDeploymentFiles(ctx, client)
 	if err != nil {
 		return "", false, err
@@ -90,7 +90,7 @@ func Prepare(ctx context.Context, client *sshio.Client, id, version, releaseBase
 		if err := ftp.RemoveFile(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return "", false, err
 		}
-		source, size, err := release.OpenBinary(ctx, releaseBase, version, platform.os, platform.binary)
+		source, size, err := release.OpenBinary(ctx, releaseBase, version, platform.os, platform.binary, progress)
 		if err != nil {
 			return "", false, err
 		}

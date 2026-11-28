@@ -30,7 +30,12 @@ copy() {
 }
 
 printf 'WSL to Windows\000\377\r\n' > original
-copy original '127.0.0.1:~/WSL transfer.bin'
+if ! copy original '127.0.0.1:~/WSL transfer.bin' 2>deploy.log; then
+    cat deploy.log >&2
+    exit 1
+fi
+cat deploy.log >&2
+grep -F 'Downloading sshore_0.0.0_windows_amd64.zip' deploy.log
 copy '127.0.0.1:C:/Users/sshore-fixture/WSL transfer.bin' downloaded
 cmp original downloaded
 

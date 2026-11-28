@@ -26,8 +26,14 @@ var assetClient = &http.Client{CheckRedirect: func(req *http.Request, via []*htt
 	return nil
 }}
 
+// AssetProgress reports the HTTP request and tracks bytes read from a successful response.
+type AssetProgress struct {
+	Start    func(name string)
+	Transfer func(name string, size int64, source io.Reader, read func(io.Reader) error) error
+}
+
 // OpenBinary returns the deployment binary and its uncompressed size in bytes.
-func OpenBinary(ctx context.Context, baseURL, version, target, binary string) (io.ReadCloser, int64, error) {
+func OpenBinary(ctx context.Context, baseURL, version, target, binary string, progress AssetProgress) (io.ReadCloser, int64, error) {
 	if runtime.GOOS == target && runtime.GOARCH == "amd64" {
 		exe, err := os.Executable()
 		if err != nil {
@@ -47,21 +53,21 @@ func OpenBinary(ctx context.Context, baseURL, version, target, binary string) (i
 	if !Valid(version) {
 		return nil, 0, fmt.Errorf("cross-platform remote deployment requires a published release")
 	}
-	data, err := downloadBinary(ctx, baseURL, version, target, binary)
+	data, err := downloadBinary(ctx, baseURL, version, target, binary, progress)
 	if err != nil {
 		return nil, 0, err
 	}
 	return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
 }
 
-func downloadBinary(ctx context.Context, baseURL, version, target, binary string) ([]byte, error) {
+func downloadBinary(ctx context.Context, baseURL, version, target, binary string, progress AssetProgress) ([]byte, error) {
 	extension := ".tar.gz"
 	if target == "windows" {
 		extension = ".zip"
 	}
 	name := "sshore_" + version + "_" + target + "_amd64" + extension
 	base := baseURL + "/v" + version + "/"
-	manifest, err := readAsset(ctx, base+"SHA256SUMS", 16<<10)
+	manifest, err := readAsset(ctx, base, "SHA256SUMS", 16<<10, progress)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +84,7 @@ func downloadBinary(ctx context.Context, baseURL, version, target, binary string
 	if len(expected) != 2*sha256.Size {
 		return nil, fmt.Errorf("release checksum missing for %s", name)
 	}
-	archive, err := readAsset(ctx, base+name, maxAssetSize)
+	archive, err := readAsset(ctx, base, name, maxAssetSize, progress)
 	if err != nil {
 		return nil, err
 	}
@@ -124,10 +130,14 @@ func downloadBinary(ctx context.Context, baseURL, version, target, binary string
 	return nil, fmt.Errorf("release archive %s lacks %s", name, binary)
 }
 
-func readAsset(ctx context.Context, url string, limit int64) ([]byte, error) {
+func readAsset(ctx context.Context, base, name string, limit int64, progress AssetProgress) ([]byte, error) {
+	url := base + name
 	request, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
+	}
+	if progress.Start != nil {
+		progress.Start(name)
 	}
 	response, err := assetClient.Do(request)
 	if err != nil {
@@ -137,7 +147,16 @@ func readAsset(ctx context.Context, url string, limit int64) ([]byte, error) {
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("download %s: %s", url, response.Status)
 	}
-	return readBounded(response.Body, limit)
+	if progress.Transfer == nil {
+		return readBounded(response.Body, limit)
+	}
+	var data []byte
+	err = progress.Transfer(name, response.ContentLength, response.Body, func(source io.Reader) error {
+		var err error
+		data, err = readBounded(source, limit)
+		return err
+	})
+	return data, err
 }
 
 func readBounded(r io.Reader, limit int64) ([]byte, error) {

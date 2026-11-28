@@ -36,6 +36,7 @@ rm downloads
 
 stdin $INSTALL
 exec sh -s -- --bin-dir $BIN
+stderr 'Downloading sshore_0.3.1_linux_amd64.tar.gz'
 exec $BIN/sshore --version
 stdout '^sshore 0.3.1$'
 exec sh -c '. "$HOME/.profile"; command -v sshore'

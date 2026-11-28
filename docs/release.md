@@ -14,6 +14,11 @@ Run `go run ./scripts` to build development packages using the nearest
 full release tag for managed connections. The [single-binary build](build.md)
 reports `dev`.
 
+Installers announce the release files before downloading and show progress in
+an interactive terminal. When a first connection needs another platform's
+archive, the client reports its download before verifying the checksum and
+transferring the executable to the remote host.
+
 ## Migration from JSON history
 
 Shell, mount, and deployment history use bbolt. Older JSON history is not imported.

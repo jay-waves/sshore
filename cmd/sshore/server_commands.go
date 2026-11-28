@@ -103,15 +103,29 @@ func (e deploymentEndpoint) openService(ctx context.Context, client *sshio.Clien
 		launchErr = err
 	}
 
-	track := func(size int64, source io.Reader, send func(io.Reader) error) error {
-		label := "Deploy server " + version + " to " + e.Host
-		run := func(count *atomic.Int64) error { return send(files.CountReads(source, count)) }
-		if _, ok := diagnostic.(*shellDiagnostics); ok {
-			return termui.RunProgress(os.Stderr, label, size, run)
-		}
-		return termui.RunProgress(diagnostic, label, size, run)
+	progressOut := diagnostic
+	if _, ok := diagnostic.(*shellDiagnostics); ok {
+		progressOut = os.Stderr
 	}
-	resolved, uploaded, err := deployment.Prepare(ctx, client, id, version, deploymentReleaseBase, install, track)
+	track := func(label string, size int64, source io.Reader, transfer func(io.Reader) error) error {
+		return termui.RunProgress(progressOut, label, size, func(count *atomic.Int64) error {
+			return transfer(files.CountReads(source, count))
+		})
+	}
+	progress := release.AssetProgress{
+		Start: func(name string) {
+			if progressOut != nil {
+				termui.Log(progressOut, "", termui.Info, "Downloading %s", name)
+			}
+		},
+		Transfer: func(name string, size int64, source io.Reader, read func(io.Reader) error) error {
+			return track("Download "+name, size, source, read)
+		},
+	}
+	upload := func(size int64, source io.Reader, send func(io.Reader) error) error {
+		return track("Deploy server "+version+" to "+e.Host, size, source, send)
+	}
+	resolved, uploaded, err := deployment.Prepare(ctx, client, id, version, deploymentReleaseBase, install, progress, upload)
 	if err != nil {
 		if pending != nil && !errors.Is(err, deployment.ErrMissing) {
 			pending.forward(diagnostic)

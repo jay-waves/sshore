@@ -56,6 +56,20 @@ try {
     Assert-True ((Add-SshorePathDirectory 'C:\Other;"c:/TOOLS/"' 'C:\Tools') -ceq 'C:\Other;"c:/TOOLS/"') 'Equivalent directory duplicated'
     Write-Host 'PASS: PATH addition preserves entries and avoids duplicates'
     $null = [IO.Directory]::CreateDirectory($root)
+    Add-Type -AssemblyName System.Net.Http
+    $bytes = [Text.Encoding]::ASCII.GetBytes('release payload')
+    $streamFile = Join-Path $root 'streamed'
+    $content = [Net.Http.StreamContent]::new([IO.MemoryStream]::new($bytes))
+    try {
+        Save-SshoreResponse $content $streamFile $bytes.Length ([Threading.CancellationToken]::None) 'Test release'
+        Assert-True ([IO.File]::ReadAllText($streamFile) -ceq 'release payload') 'Streamed file differs from response'
+    } finally { $content.Dispose() }
+    $content = [Net.Http.StreamContent]::new([IO.MemoryStream]::new($bytes))
+    try {
+        # A body must still respect the limit when the advertised length is small.
+        $content.Headers.ContentLength = 1
+        Assert-Fails { Save-SshoreResponse $content $streamFile 2 ([Threading.CancellationToken]::None) 'Test release' } 'Download exceeds 2 bytes'
+    } finally { $content.Dispose() }
     # Windows PowerShell 5.1 does not automatically load the ZIP core assembly.
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
