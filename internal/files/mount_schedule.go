@@ -25,9 +25,10 @@ var mountRequestWindows = [2]int{8, 16}
 
 var errMountRequestQueueTimeout = errors.New("SFTP request timed out waiting for a send slot")
 
-func newMountSFTPClient(ctx context.Context, wire *ftpWire, timeout time.Duration) (*sftp.Client, error) {
+// NewMountSFTPClient opens the scheduled file-operation stream for a mount.
+func NewMountSFTPClient(ctx context.Context, wire *ftpWire, timeout time.Duration) (*sftp.Client, error) {
 	scheduler := &mountRequestScheduler{ctx: ctx, timeout: timeout}
-	return sftp.NewClientPipe(ctx, wire, wire, sftp.WithMaxDataLength(mountSFTPDataLength),
+	return sftp.NewClientPipe(ctx, wire, wire, sftp.WithMaxDataLength(MountSFTPDataLength),
 		sftp.WithDispatchAdmission(scheduler.admit))
 }
 

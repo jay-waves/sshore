@@ -73,12 +73,12 @@ closes the mount connection, and writes are never replayed. See
 [`sshore mount --help`](../cmd/sshore/cli_schema.go) for timeout settings and
 [SFTP mount safeguards](SECURITY.md#sftp-mounts) for failure semantics.
 
-## Benchmark
+## Benchmarks
 
 Run on Windows or Linux with the repository's Go toolchain:
 
 ```sh
-go run ./scripts go test ./internal/files -run '^$' -bench '^BenchmarkMountResponsiveness$' -benchtime=20x
+go run ./scripts go test ./tests/benchmarks -run '^$' -bench '^BenchmarkMountResponsiveness$' -benchtime=20x
 ```
 
 The benchmark uses the real SFTP client and agent on a local TCP connection.
@@ -92,6 +92,15 @@ and concurrent bulk throughput in MiB/s.
 Use these figures to compare changes under the same load. End-to-end
 filesystem and SSH performance also depends on the platform, caching, network,
 server, and workload.
+
+The SFTP guard inspects responses in the decoder's buffer. On writes, the
+transport receives the header and original file payload as separate slices.
+Request accounting and directory response budgets apply on both paths.
+Measure the cost of processing a 64 KiB frame in memory with:
+
+```sh
+go run ./scripts go test ./tests/benchmarks -run '^$' -bench '^BenchmarkMountWireDataFrame$'
+```
 
 ## Change notification and teardown
 

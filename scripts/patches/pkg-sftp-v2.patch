@@ -1,3 +1,16 @@
+--- a/encoding/ssh/filexfer/packets.go
++++ b/encoding/ssh/filexfer/packets.go
+@@ -178,6 +178,10 @@
+ 		return b, fmt.Errorf("error reading packet body: %d of %d: %w", n, length, err)
+ 	}
+ 
++	// The reader can inspect the decoder's buffer without copying the frame.
++	if filter, ok := r.(interface{ FilterSFTPPacket([]byte) ([]byte, error) }); ok {
++		return filter.FilterSFTPPacket(b)
++	}
+ 	return b, nil
+ }
+ 
 --- a/client.go
 +++ b/client.go
 @@ -44,6 +44,8 @@
@@ -52,7 +65,38 @@
  
  	header, payload, err := req.MarshalPacket(reqid, c.bufPool.Get())
  	if err != nil {
-@@ -253,6 +277,10 @@
+@@ -237,15 +261,22 @@
+ 	default:
+ 	}
+ 
+-	if _, err := c.wr.Write(header); err != nil {
+-		c.resPool.Put(ch)
+-		return reqid, nil, fmt.Errorf("%w: write packet header: %v", sshfx.StatusConnectionLost, err)
+-	}
+-
+-	if len(payload) != 0 {
+-		if _, err := c.wr.Write(payload); err != nil {
++	if writer, ok := c.wr.(interface{ WriteSFTPPacket(header, payload []byte) error }); ok {
++		if err := writer.WriteSFTPPacket(header, payload); err != nil {
+ 			c.resPool.Put(ch)
+-			return reqid, nil, fmt.Errorf("%w: write packet payload: %v", sshfx.StatusConnectionLost, err)
++			return reqid, nil, fmt.Errorf("%w: write packet: %v", sshfx.StatusConnectionLost, err)
++		}
++	} else {
++		if _, err := c.wr.Write(header); err != nil {
++			c.resPool.Put(ch)
++			return reqid, nil, fmt.Errorf("%w: write packet header: %v", sshfx.StatusConnectionLost, err)
++		}
++
++		if len(payload) != 0 {
++			if _, err := c.wr.Write(payload); err != nil {
++				c.resPool.Put(ch)
++				return reqid, nil, fmt.Errorf("%w: write packet payload: %v", sshfx.StatusConnectionLost, err)
++			}
+ 		}
+ 	}
+ 
+@@ -253,6 +284,10 @@
  		c.inflight = make(map[uint32]chan<- result)
  	}
  	c.inflight[reqid] = ch
@@ -63,7 +107,7 @@
  
  	return reqid, ch, nil
  }
-@@ -329,6 +357,17 @@
+@@ -329,6 +364,17 @@
  
  // ClientOption specifies an optional that can be set on a client.
  type ClientOption func(*Client) error
@@ -81,7 +125,7 @@
  
  // WithMaxInflight sets the maximum number of inflight packets at one time.
  //
-@@ -880,6 +919,16 @@
+@@ -880,6 +926,16 @@
  	}
  
  	return nil

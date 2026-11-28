@@ -37,8 +37,6 @@ type ftpWire struct {
 	peakRequests                  int
 	reader                        io.Reader
 	writer                        io.WriteCloser
-	readBuffer, writeBuffer       []byte
-	readOffset                    int
 	mu                            sync.Mutex
 	requests                      map[uint64]ftpRequest
 	requestWake                   chan struct{} // idle/busy transition
@@ -46,15 +44,16 @@ type ftpWire struct {
 	maxEntries, maxDirectoryBytes uint64
 }
 
-func newFTPWire(r io.Reader, w io.WriteCloser) *ftpWire {
-	return &ftpWire{reader: r, writer: w, requests: make(map[uint64]ftpRequest), maxEntries: ftpMaxDirectoryEntries, maxDirectoryBytes: ftpMaxDirectoryBytes}
+// NewSFTPWire tracks SFTP requests and enforces directory response budgets.
+func NewSFTPWire(stream io.ReadWriteCloser) *ftpWire {
+	return &ftpWire{reader: stream, writer: stream, requests: make(map[uint64]ftpRequest), maxEntries: ftpMaxDirectoryEntries, maxDirectoryBytes: ftpMaxDirectoryBytes}
 }
 
 // Enable counters before passing the wire to the SFTP client.
 func (w *ftpWire) enableMetrics() { w.totals = new([256]ftpRequestTotals) }
 
 func NewCopyClient(ctx context.Context, stream io.ReadWriteCloser) (*sftp.Client, error) {
-	wire := newFTPWire(stream, stream)
+	wire := NewSFTPWire(stream)
 	return sftp.NewClientPipe(ctx, wire, wire, sftp.WithMaxInflight(sftpCopyConcurrency))
 }
 func (w *ftpWire) Close() error { return w.writer.Close() }
@@ -68,7 +67,7 @@ func ftpWireString(b []byte) ([]byte, bool) {
 	}
 	return b[4 : 4+int(n)], true
 }
-func (w *ftpWire) record(packet []byte) error {
+func (w *ftpWire) record(packet []byte, size uint32) error {
 	if len(packet) < 5 {
 		return fmt.Errorf("short outgoing SFTP packet")
 	}
@@ -115,7 +114,7 @@ func (w *ftpWire) record(packet []byte) error {
 	}
 	if w.totals != nil && kind != 1 {
 		w.totals[kind].Started++
-		w.totals[kind].SentBytes += uint64(len(packet) + 4)
+		w.totals[kind].SentBytes += uint64(size) + 4
 		w.peakRequests = max(w.peakRequests, len(w.requests))
 	}
 	return nil
@@ -127,41 +126,32 @@ func (w *ftpWire) wakeRequestWatchLocked() {
 	}
 }
 
+// Write handles the complete INIT frame. The client uses WriteSFTPPacket
+// for requests whose header and file payload are separate slices.
 func (w *ftpWire) Write(p []byte) (int, error) {
-	// pkg/sftp serializes writes, but can split a frame between header and data.
-	accepted := 0
-	for len(p) > 0 {
-		if len(w.writeBuffer) < 4 {
-			take := min(4-len(w.writeBuffer), len(p))
-			w.writeBuffer = append(w.writeBuffer, p[:take]...)
-			p = p[take:]
-			accepted += take
-			if len(w.writeBuffer) < 4 {
-				break
-			}
-		}
-		n := binary.BigEndian.Uint32(w.writeBuffer[:4])
-		if n < 5 || n > ftpMaxPacket {
-			return accepted, fmt.Errorf("invalid SFTP request size %d", n)
-		}
-		frameSize := 4 + int(n)
-		take := min(frameSize-len(w.writeBuffer), len(p))
-		w.writeBuffer = append(w.writeBuffer, p[:take]...)
-		p = p[take:]
-		accepted += take
-		if len(w.writeBuffer) < frameSize {
-			break
-		}
-		if e := w.record(w.writeBuffer[4:]); e != nil {
-			return accepted, e
-		}
-		if e := writeFull(w.writer, w.writeBuffer); e != nil {
-			return accepted, e
-		}
-		w.writeBuffer = w.writeBuffer[:0]
+	if err := w.WriteSFTPPacket(p, nil); err != nil {
+		return 0, err
 	}
-	return accepted, nil
+	return len(p), nil
 }
+
+func (w *ftpWire) WriteSFTPPacket(header, payload []byte) error {
+	if len(header) < 9 {
+		return fmt.Errorf("short SFTP request header")
+	}
+	size := binary.BigEndian.Uint32(header[:4])
+	if size > ftpMaxPacket || uint64(size) != uint64(len(header)-4)+uint64(len(payload)) {
+		return fmt.Errorf("invalid SFTP request size %d", size)
+	}
+	if err := w.record(header[4:], size); err != nil {
+		return err
+	}
+	if err := writeFull(w.writer, header); err != nil {
+		return err
+	}
+	return writeFull(w.writer, payload)
+}
+
 func ftpDirectoryFailure(id uint32) []byte {
 	const msg = "directory exceeds sshore listing limit"
 	b := make([]byte, 1, 17+len(msg))
@@ -173,8 +163,9 @@ func ftpDirectoryFailure(id uint32) []byte {
 	return binary.BigEndian.AppendUint32(b, 0) // language
 }
 
-// A non-nil result replaces the response sent to pkg/sftp.
-func (w *ftpWire) filter(packet []byte) ([]byte, error) {
+// FilterSFTPPacket inspects the decoder buffer and substitutes a status only
+// when a directory listing exceeds its wire budget.
+func (w *ftpWire) FilterSFTPPacket(packet []byte) ([]byte, error) {
 	if len(packet) < 5 {
 		return nil, fmt.Errorf("short SFTP response")
 	}
@@ -187,7 +178,7 @@ func (w *ftpWire) filter(packet []byte) ([]byte, error) {
 	defer w.mu.Unlock()
 	req, ok := w.requests[key]
 	if !ok {
-		return nil, nil
+		return packet, nil
 	} // pkg/sftp diagnoses unsolicited IDs.
 	delete(w.requests, key)
 	if len(w.requests) == 0 {
@@ -217,46 +208,9 @@ func (w *ftpWire) filter(packet []byte) ([]byte, error) {
 	if overBudget {
 		return ftpDirectoryFailure(id), nil
 	}
-	return nil, nil
+	return packet, nil
 }
-func (w *ftpWire) Read(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	if w.readOffset == len(w.readBuffer) {
-		var header [4]byte
-		if _, e := io.ReadFull(w.reader, header[:]); e != nil {
-			return 0, e
-		}
-		size := binary.BigEndian.Uint32(header[:])
-		if size < 5 || size > ftpMaxPacket {
-			return 0, fmt.Errorf("invalid SFTP response size %d", size)
-		}
-		needed := 4 + int(size)
-		if cap(w.readBuffer) < needed {
-			w.readBuffer = make([]byte, needed)
-		} else {
-			w.readBuffer = w.readBuffer[:needed]
-		}
-		if _, e := io.ReadFull(w.reader, w.readBuffer[4:]); e != nil {
-			return 0, e
-		}
-		replacement, e := w.filter(w.readBuffer[4:])
-		if e != nil {
-			return 0, e
-		}
-		if replacement != nil {
-			w.readBuffer = binary.BigEndian.AppendUint32(w.readBuffer[:0], uint32(len(replacement)))
-			w.readBuffer = append(w.readBuffer, replacement...)
-		} else {
-			copy(w.readBuffer, header[:])
-		}
-		w.readOffset = 0
-	}
-	n := copy(p, w.readBuffer[w.readOffset:])
-	w.readOffset += n
-	return n, nil
-}
+func (w *ftpWire) Read(p []byte) (int, error) { return w.reader.Read(p) }
 
 // Each outstanding SFTP request has its own deadline. A responsive sibling or
 // SSH keepalive cannot hide one stuck request. Timeout tears down the transport;

@@ -200,7 +200,7 @@ func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error)
 			}
 		}
 	}
-	ftp := newFTPWire(data, data)
+	ftp := NewSFTPWire(data)
 	if o.ReportStats != nil {
 		ftp.enableMetrics()
 	}
@@ -212,7 +212,7 @@ func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error)
 		})
 	}
 	// The same limit covers directory replies on every client and 128 KiB FUSE reads in two requests.
-	client, err = newMountSFTPClient(ctx, ftp, o.IOTimeout)
+	client, err = NewMountSFTPClient(ctx, ftp, o.IOTimeout)
 	if err != nil {
 		if cause := context.Cause(ctx); cause != nil {
 			return 1, cause
@@ -381,7 +381,8 @@ type message struct {
 }
 
 const (
-	mountSFTPDataLength = 64 * 1024
+	// MountSFTPDataLength is the largest data payload in one mount request.
+	MountSFTPDataLength = 64 * 1024
 	maxMountMessage     = 64*1024 + 4096
 )
 
@@ -448,7 +449,7 @@ func (r mountByteReader) ReadByte() (byte, error) {
 }
 
 func serveMountData(data io.ReadWriteCloser) error {
-	server := sftp.Server{Handler: &mountSFTPHandler{}, Debug: io.Discard, MaxDataLength: mountSFTPDataLength}
+	server := sftp.Server{Handler: &mountSFTPHandler{}, Debug: io.Discard, MaxDataLength: MountSFTPDataLength}
 	return server.Serve(data)
 }
 
